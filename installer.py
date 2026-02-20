@@ -426,7 +426,8 @@ def create_ec2_role(knowledge_base_role_arn: str) -> str:
     
     managed_policies = [
         "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
-        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+        "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
     ]
     role_arn = create_iam_role(role_name, assume_role_policy, managed_policies)
     
