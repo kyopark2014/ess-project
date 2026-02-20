@@ -1501,29 +1501,30 @@ async def run_strands_agent(query, strands_tools, mcp_servers, containers):
                 logger.info(f"[message] {message}")
 
                 if "content" in message:
-                    content = message["content"]
-                    logger.info(f"tool content: {content}")
-                    if "toolResult" in content[0]:
-                        toolResult = content[0]["toolResult"]
-                        toolUseId = toolResult["toolUseId"]
-                        toolContent = toolResult["content"]
-                        toolResult = toolContent[0].get("text", "")
-                        tool_name = tool_name_list[toolUseId]
-                        logger.info(f"[toolResult] {toolResult}, [toolUseId] {toolUseId}")
-                        add_notification(containers, f"Tool Result: {str(toolResult)}")
+                    msg_content = message["content"]
+                    logger.info(f"tool content: {msg_content}")
+                    for content_item in msg_content:
+                        if "toolResult" in content_item:
+                            toolResult = content_item["toolResult"]
+                            toolUseId = toolResult["toolUseId"]
+                            toolContent = toolResult["content"]
+                            toolResultText = toolContent[0].get("text", "")
+                            tool_name = tool_name_list[toolUseId]
+                            logger.info(f"[toolResult] {toolResultText}, [toolUseId] {toolUseId}")
+                            add_notification(containers, f"Tool Result: {str(toolResultText)}")
 
-                        content, urls, refs = get_tool_info(tool_name, toolResult)
-                        if refs:
-                            for r in refs:
-                                references.append(r)
-                            logger.info(f"refs: {refs}")
-                        if urls:
-                            for url in urls:
-                                image_url.append(url)
-                            logger.info(f"urls: {urls}")
+                            parsed_content, urls, refs = get_tool_info(tool_name, toolResultText)
+                            if refs:
+                                for r in refs:
+                                    references.append(r)
+                                logger.info(f"refs: {refs}")
+                            if urls:
+                                for url in urls:
+                                    image_url.append(url)
+                                logger.info(f"urls: {urls}")
 
-                        if content:
-                            logger.info(f"content: {content}")                
+                            if parsed_content:
+                                logger.info(f"content: {parsed_content}")                
                 
             elif "contentBlockDelta" or "contentBlockStop" or "messageStop" or "metadata" in event:
                 pass
