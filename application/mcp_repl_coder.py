@@ -33,7 +33,7 @@ def load_config():
 
 config = load_config()
 
-region = config.get("region", "ap-northeast-2")
+region = config.get("region", "us-west-2")
 projectName = config.get("projectName", "es")
 
 s3_prefix = "docs"

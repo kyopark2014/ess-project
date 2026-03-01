@@ -80,8 +80,10 @@ def load_config(mcp_type):
         return {
             "mcpServers": {
                 "filesystem": {
-                    "command": "mcp-server-filesystem",
+                    "command": "npx",
                     "args": [
+                        "-y",
+                        "@modelcontextprotocol/server-filesystem",
                         f"{parent_dir}",
                         f"{workingDir}",
                         f"{contents_dir}"
@@ -89,7 +91,7 @@ def load_config(mcp_type):
                 }
             }
         }    
-    
+
     elif mcp_type == "trade_info":
         return {
             "mcpServers": {
