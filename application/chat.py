@@ -549,35 +549,21 @@ def upload_to_s3_artifacts(file_bytes, file_name):
         logger.info(f"{err_msg}")
         return None
 
-streaming_index = None
-index = 0
 def add_notification(containers, message):
-    global index
-
-    if index == streaming_index:
-        index += 1
-
     if containers is not None:
-        containers['notification'][index].info(message)
-    index += 1
+        containers['queue'].notify(message)
 
 def update_streaming_result(containers, message):
-    global streaming_index
-    streaming_index = index 
-
     if containers is not None:
-        containers['notification'][streaming_index].markdown(message)
+        containers['queue'].stream(message)
 
-def update_tool_notification(containers, tool_index, message):
+def update_tool_notification(containers, tool_use_id, message):
     if containers is not None:
-        containers['notification'][tool_index].info(message)
+        containers['queue'].tool_update(tool_use_id, message)
 
 def update_rag_result(containers, message):
-    global streaming_index
-    streaming_index = index 
-
     if containers is not None:
-        containers['message'].markdown(message)
+        containers['queue'].stream(message)
 
 ####################### boto3 #######################
 # General Conversation
@@ -1071,9 +1057,6 @@ def run_rag_using_retrieve_and_generate(query, containers):
 
     return msg
 
-tool_info_list = dict()
-tool_result_list = dict()
-tool_name_list = dict()
 
 sharing_url = config["sharing_url"] if "sharing_url" in config else None
 s3_prefix = "docs"
@@ -1440,8 +1423,8 @@ def get_tool_info(tool_name, tool_content):
     return content, urls, tool_references
 
 async def run_strands_agent(query, strands_tools, mcp_servers, containers):
-    global index
-    index = 0
+    queue = containers['queue']
+    queue.reset()
 
     image_url = []
     references = []
@@ -1464,7 +1447,7 @@ async def run_strands_agent(query, strands_tools, mcp_servers, containers):
                 text = event["data"]
                 logger.info(f"[data] {text}")
                 current += text
-                update_streaming_result(containers, current)
+                queue.stream(current)
 
             elif "result" in event:
                 final = event["result"]                
@@ -1479,22 +1462,15 @@ async def run_strands_agent(query, strands_tools, mcp_servers, containers):
                 current_tool_use = event["current_tool_use"]
                 logger.info(f"current_tool_use: {current_tool_use}")
                 name = current_tool_use.get("name", "")
-                input = current_tool_use.get("input", "")
+                input_val = current_tool_use.get("input", "")
                 toolUseId = current_tool_use.get("toolUseId", "")
 
-                text = f"name: {name}, input: {input}"
+                text = f"name: {name}, input: {input_val}"
                 logger.info(f"[current_tool_use] {text}")
 
-                if toolUseId not in tool_info_list: # new tool info
-                    index += 1
-                    current = ""
-                    logger.info(f"new tool info: {toolUseId} -> {index}")
-                    tool_info_list[toolUseId] = index
-                    tool_name_list[toolUseId] = name
-                    add_notification(containers, f"Tool: {name}, Input: {input}")
-                else: # overwrite tool info if already exists
-                    logger.info(f"overwrite tool info: {toolUseId} -> {tool_info_list[toolUseId]}")
-                    containers['notification'][tool_info_list[toolUseId]].info(f"Tool: {name}, Input: {input}")
+                queue.register_tool(toolUseId, name)
+                queue.tool_update(toolUseId, f"Tool: {name}, Input: {input_val}")
+                current = ""
 
             elif "message" in event:
                 message = event["message"]
@@ -1504,27 +1480,28 @@ async def run_strands_agent(query, strands_tools, mcp_servers, containers):
                     msg_content = message["content"]
                     logger.info(f"tool content: {msg_content}")
                     for content_item in msg_content:
-                        if "toolResult" in content_item:
-                            toolResult = content_item["toolResult"]
-                            toolUseId = toolResult["toolUseId"]
-                            toolContent = toolResult["content"]
-                            toolResultText = toolContent[0].get("text", "")
-                            tool_name = tool_name_list[toolUseId]
-                            logger.info(f"[toolResult] {toolResultText}, [toolUseId] {toolUseId}")
-                            add_notification(containers, f"Tool Result: {str(toolResultText)}")
+                        if "toolResult" not in content_item:
+                            continue
+                        toolResult = content_item["toolResult"]
+                        toolUseId = toolResult["toolUseId"]
+                        toolContent = toolResult["content"]
+                        toolResultText = toolContent[0].get("text", "")
+                        tool_name = queue.get_tool_name(toolUseId)
+                        logger.info(f"[toolResult] {toolResultText}, [toolUseId] {toolUseId}")
+                        queue.notify(f"Tool Result: {str(toolResultText)}")
 
-                            parsed_content, urls, refs = get_tool_info(tool_name, toolResultText)
-                            if refs:
-                                for r in refs:
-                                    references.append(r)
-                                logger.info(f"refs: {refs}")
-                            if urls:
-                                for url in urls:
-                                    image_url.append(url)
-                                logger.info(f"urls: {urls}")
+                        parsed_content, urls, refs = get_tool_info(tool_name, toolResultText)
+                        if refs:
+                            for r in refs:
+                                references.append(r)
+                            logger.info(f"refs: {refs}")
+                        if urls:
+                            for url in urls:
+                                image_url.append(url)
+                            logger.info(f"urls: {urls}")
 
-                            if parsed_content:
-                                logger.info(f"content: {parsed_content}")                
+                        if parsed_content:
+                            logger.info(f"content: {parsed_content}")
                 
             elif "contentBlockDelta" or "contentBlockStop" or "messageStop" or "metadata" in event:
                 pass
@@ -1540,6 +1517,6 @@ async def run_strands_agent(query, strands_tools, mcp_servers, containers):
             final_result += ref
 
         if containers is not None:
-            containers['notification'][index].markdown(final_result)
+            queue.result(final_result)
     
     return final_result, image_url

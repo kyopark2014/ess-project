@@ -8,6 +8,7 @@ import logging
 import sys
 
 from langchain_core.documents import Document
+from notification_queue import NotificationQueue
 
 logging.basicConfig(
     level=logging.INFO,  
@@ -274,7 +275,7 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 containers = {
                     "tools": st.empty(),
                     "status": st.empty(),
-                    "notification": [st.empty() for _ in range(1000)],
+                    "queue": NotificationQueue(container=status),
                     "key": st.empty()
                 }
 
