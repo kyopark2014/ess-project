@@ -74,7 +74,7 @@ s3_prefix = 'docs'
 s3_image_prefix = 'images'
 doc_prefix = s3_prefix+'/'
 
-model_name = "Claude 4.5 Sonnet"
+model_name = "Claude 4.6 Sonnet"
 model_type = "claude"
 debug_mode = "Enable"
 models = info.get_model_info(model_name)

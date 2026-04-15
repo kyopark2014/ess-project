@@ -116,15 +116,11 @@ with st.sidebar:
     modelName = st.selectbox(
         '🖊️ 사용 모델을 선택하세요',
         (
+            "Claude 4.6 Sonnet",
+            "Claude 4.6 Opus",            
             "Claude 4.5 Haiku",
             "Claude 4.5 Sonnet",
             "Claude 4.5 Opus",  
-            "Claude 4 Opus", 
-            "Claude 4 Sonnet", 
-            "Claude 3.7 Sonnet", 
-            "Claude 3.5 Sonnet", 
-            "Claude 3.0 Sonnet", 
-            "Claude 3.5 Haiku", 
             "OpenAI OSS 120B",
             "OpenAI OSS 20B",
             "Nova 2 Lite",
@@ -132,7 +128,7 @@ with st.sidebar:
             "Nova Pro", 
             "Nova Lite", 
             "Nova Micro",            
-        ), index=4
+        ), index=0
     )
 
     # debug checkbox
