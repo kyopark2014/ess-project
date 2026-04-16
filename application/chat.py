@@ -6,10 +6,10 @@ import uuid
 import logging
 import sys
 import re
+import base64
 import PyPDF2
 import csv
 import os
-import strands_agent
 import json
 
 from botocore.config import Config
@@ -18,6 +18,7 @@ from langchain_aws import ChatBedrock
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from io import BytesIO
+from PIL import Image
 from langchain_core.documents import Document
 from botocore.exceptions import ClientError
 from langchain_core.messages import HumanMessage, AIMessage
@@ -59,11 +60,11 @@ config_path = os.path.join(workingDir, "config.json")
 config = utils.load_config()
 
 bedrock_region = config.get("region", "us-west-2")
-projectName = config.get("projectName", "mcp-rag")
+projectName = config.get("projectName", "strands")
 accountId = config.get("accountId", None)
 knowledge_base_id = config.get('knowledge_base_id', None)
 account_id = config.get("accountId", None)
-user_id = 'strands'
+user_id = 'agent'
 
 if accountId is None:
     raise Exception ("No accountId")
@@ -77,9 +78,8 @@ doc_prefix = s3_prefix+'/'
 model_name = "Claude 4.6 Sonnet"
 model_type = "claude"
 debug_mode = "Enable"
+model_id = "us.anthropic.claude-sonnet-4-6"
 models = info.get_model_info(model_name)
-number_of_models = len(models)
-model_id = models[0]["model_id"]
 bedrock_region = "us-west-2"
 reasoning_mode = 'Disable'
 
@@ -88,8 +88,28 @@ MSG_LENGTH = 100
 map_chain = dict()
 memory_chain = None
 
+aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+aws_region = os.environ.get('AWS_DEFAULT_REGION', 'us-west-2')
+
+def get_max_output_tokens(model_id: str = "") -> int:
+    """Return the max output tokens based on the model ID."""
+    if "claude-opus-4-6" in model_id:
+        return 128000
+    if "claude-opus-4-5" in model_id:
+        return 64000
+    if "claude-opus-4" in model_id or "claude-4-opus" in model_id:
+        return 32000
+    if "claude-sonnet-4" in model_id or "claude-4-sonnet" in model_id or "claude-haiku-4" in model_id:
+        return 64000
+    return 8192
+
 def update(modelName, reasoningMode, debugMode):    
     global model_name, model_id, model_type, reasoning_mode, debug_mode
+
+    # load mcp.env    
+    mcp_env = utils.load_mcp_env()
     
     if model_name != modelName:
         model_name = modelName
@@ -106,6 +126,11 @@ def update(modelName, reasoningMode, debugMode):
         debug_mode = debugMode
         logger.info(f"debug_mode: {debug_mode}")        
 
+    # update mcp.env    
+    mcp_env['user_id'] = user_id
+    utils.save_mcp_env(mcp_env)
+    logger.info(f"mcp.env updated: {mcp_env}")
+
 def create_object(key, body):
     """
     Create an object in S3 and return the URL. If the file already exists, append the new content.
@@ -118,10 +143,19 @@ def create_object(key, body):
     elif key.endswith('.md'):
         content_type = 'text/markdown'
     
-    s3_client = boto3.client(
-        service_name='s3',
-        region_name=bedrock_region,
-    )
+    if aws_access_key and aws_secret_key:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
+        )
+    else:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+        )
         
     s3_client.put_object(
         Bucket=s3_bucket,
@@ -134,10 +168,19 @@ def updata_object(key, body, direction):
     """
     Create an object in S3 and return the URL. If the file already exists, append the new content.
     """
-    s3_client = boto3.client(
-        service_name='s3',
-        region_name=bedrock_region,
-    )
+    if aws_access_key and aws_secret_key:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
+        )
+    else:
+        s3_client = boto3.client(
+            service_name='s3',
+            region_name=bedrock_region,
+        )
 
     try:
         # Check if file exists
@@ -200,8 +243,11 @@ def traslation(chat, text, input_language, output_language):
     return msg[msg.find('<result>')+8:len(msg)-9] # remove <result> tag
 
 def initiate():
-    global memory_chain, map_chain
+    global memory_chain, map_chain, user_id
+
+    user_id = uuid.uuid4().hex
     
+    # general conversation memory
     if user_id in map_chain:  
         logger.info(f"memory exist. reuse it!")
         memory_chain = map_chain[user_id]
@@ -247,9 +293,9 @@ def isKorean(text):
     
 def get_chat(extended_thinking):
     if model_type == 'claude':
-        maxOutputTokens = 4096 # 4k
+        maxOutputTokens = get_max_output_tokens()
     else:
-        maxOutputTokens = 5120 # 5k
+        maxOutputTokens = 5120
     
     logger.info(f"LLM: bedrock_region: {bedrock_region}, modelId: {model_id}, model_type: {model_type}")
 
@@ -258,15 +304,36 @@ def get_chat(extended_thinking):
     elif model_type == 'claude':
         STOP_SEQUENCE = "\n\nHuman:" 
                           
-    boto3_bedrock = boto3.client(
-        service_name='bedrock-runtime',
-        region_name=bedrock_region,
-        config=Config(
-            retries = {
-                'max_attempts': 30
-            }
+    # Set AWS credentials
+    aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+    
+    # bedrock   
+    if aws_access_key and aws_secret_key:
+        boto3_bedrock = boto3.client(
+            service_name='bedrock-runtime',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token,
+            config=Config(
+                retries = {
+                    'max_attempts': 30
+                },
+                read_timeout=300
+            )
         )
-    )
+    else:
+        boto3_bedrock = boto3.client(
+            service_name='bedrock-runtime',
+            region_name=bedrock_region,
+            config=Config(
+                retries = {
+                    'max_attempts': 30
+                }
+            )
+        )
     if extended_thinking=='Enable':
         maxReasoningOutputTokens=64000
         logger.info(f"extended_thinking: {extended_thinking}")
@@ -337,7 +404,20 @@ def get_summary(docs):
 
 # load documents from s3 for pdf and txt
 def load_document(file_type, s3_file_name):
-    s3r = boto3.resource("s3", region_name=bedrock_region)
+    # Set AWS credentials
+    aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+    
+    if aws_access_key and aws_secret_key:
+        s3r = boto3.resource(
+            "s3",
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token
+        )
+    else:
+        s3r = boto3.resource("s3")
         
     doc = s3r.Object(s3_bucket, s3_prefix+'/'+s3_file_name)
     logger.info(f"s3_bucket: {s3_bucket}, s3_prefix: {s3_prefix}, s3_file_name: {s3_file_name}")
@@ -421,10 +501,24 @@ def get_summary_of_uploaded_file(file_name, st):
 
 # load csv documents from s3
 def load_csv_document(s3_file_name):
-    s3r = boto3.resource(
-        service_name='s3',
-        region_name=bedrock_region
-    )
+    # Set AWS credentials
+    aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+    
+    if aws_access_key and aws_secret_key:
+        s3r = boto3.resource(
+            service_name='s3',
+            region_name=bedrock_region,
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            aws_session_token=aws_session_token
+        )
+    else:
+        s3r = boto3.resource(
+            service_name='s3',
+            region_name=bedrock_region
+        )
     doc = s3r.Object(s3_bucket, s3_prefix+'/'+s3_file_name)
 
     lines = doc.get()['Body'].read().decode('utf-8').split('\n')   # read csv per line
@@ -438,6 +532,7 @@ def load_csv_document(s3_file_name):
     docs = []
     n = 0
     for row in csv.DictReader(lines, delimiter=',',quotechar='"'):
+        #to_metadata = {col: row[col] for col in columns_to_metadata if col in row}
         values = {k: row[k] for k in columns if k in row}
         content = "\n".join(f"{k.strip()}: {v.strip()}" for k, v in values.items())
         doc = Document(
@@ -463,18 +558,37 @@ accountId = config["accountId"] if "accountId" in config else None
 s3_prefix = 'docs'
 s3_image_prefix = 'images'
 
-s3_bucket = config.get("s3_bucket")
-path = config.get("sharing_url")
+s3_bucket = config["s3_bucket"] if "s3_bucket" in config else None
+
+path = config["sharing_url"] if "sharing_url" in config else None
 
 def upload_to_s3(file_bytes, file_name):
     """
     Upload a file to S3 and return the URL
     """
     try:
-        s3_client = boto3.client(
-            service_name='s3',
-            region_name=bedrock_region
-        )
+        # Set AWS credentials
+        aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+        aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+        aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+        
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                aws_session_token=aws_session_token
+            )
+        else:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region
+            )
+        # Generate a unique file name to avoid collisions
+        #timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        #unique_id = str(uuid.uuid4())[:8]
+        #s3_key = f"uploaded_images/{timestamp}_{unique_id}_{file_name}"
 
         content_type = utils.get_contents_type(file_name)       
         logger.info(f"content_type: {content_type}") 
@@ -512,9 +626,18 @@ def upload_to_s3_artifacts(file_bytes, file_name):
     Upload a file to S3 and return the URL
     """
     try:
-        s3_client = boto3.client(
-            service_name='s3',
-            region_name=bedrock_region
+        if aws_access_key and aws_secret_key:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region,
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                aws_session_token=aws_session_token
+            )
+        else:
+            s3_client = boto3.client(
+                service_name='s3',
+                region_name=bedrock_region
         )
 
         content_type = utils.get_contents_type(file_name)       
@@ -565,7 +688,9 @@ def update_rag_result(containers, message):
 #########################################################
 def general_conversation(query):
     global memory_chain
-    initiate()  # Initialize memory_chain
+
+    if memory_chain is None:
+        initiate()  # Initialize memory_chain
 
     system_prompt = (
         "당신의 이름은 서연이고, 질문에 대해 친절하게 답변하는 사려깊은 인공지능 도우미입니다."
@@ -603,10 +728,7 @@ def general_conversation(query):
     
     # Set model parameters
     if model_type == 'claude':
-        if '4.5' in model_name:
-            maxOutputTokens = 8192
-        else:
-            maxOutputTokens = 4096
+        maxOutputTokens = get_max_output_tokens()
         STOP_SEQUENCE = "\n\nHuman:"
     else:
         maxOutputTokens = 5120
@@ -641,6 +763,7 @@ def general_conversation(query):
                     "max_tokens": parameters["max_tokens"],
                     "temperature": parameters.get("temperature", 0.1),
                     "top_k": parameters.get("top_k", 250),
+                    "top_p": parameters.get("top_p", 0.9),
                     "stop_sequences": parameters.get("stop_sequences", []),
                     "system": system_prompt,
                     "messages": messages
@@ -852,7 +975,7 @@ def run_rag_with_knowledge_base(query, st):
     
     # Set model parameters
     if model_type == 'claude':
-        maxOutputTokens = 4096
+        maxOutputTokens = get_max_output_tokens()
         STOP_SEQUENCE = "\n\nHuman:"
     else:
         maxOutputTokens = 5120
@@ -875,6 +998,7 @@ def run_rag_with_knowledge_base(query, st):
             "max_tokens": maxOutputTokens,
             "temperature": 0.1,
             "top_k": 250,
+            "top_p": 0.9,
             "stop_sequences": [STOP_SEQUENCE]
         }
     
@@ -888,6 +1012,7 @@ def run_rag_with_knowledge_base(query, st):
                 "max_tokens": parameters["max_tokens"],
                 "temperature": parameters.get("temperature", 0.1),
                 "top_k": parameters.get("top_k", 250),
+                "top_p": parameters.get("top_p", 0.9),
                 "stop_sequences": parameters.get("stop_sequences", []),
                 "system": system_prompt,
                 "messages": [
@@ -1051,7 +1176,6 @@ def run_rag_using_retrieve_and_generate(query, containers):
     update_rag_result(containers, msg)
 
     return msg
-
 
 sharing_url = config["sharing_url"] if "sharing_url" in config else None
 s3_prefix = "docs"
@@ -1417,101 +1541,157 @@ def get_tool_info(tool_name, tool_content):
 
     return content, urls, tool_references
 
-async def run_strands_agent(query, strands_tools, mcp_servers, containers):
-    queue = containers['queue']
-    queue.reset()
 
-    image_url = []
-    references = []
+def _resize_and_encode(image_content):
+    """Resize image if needed and return base64-encoded string."""
+    img = Image.open(BytesIO(image_content))
+    width, height = img.size
+    logger.info(f"width: {width}, height: {height}, size: {width*height}")
 
-    # initiate agent
-    await strands_agent.initiate_agent(
-        system_prompt=None, 
-        strands_tools=strands_tools, 
-        mcp_servers=mcp_servers
-    )
+    isResized = False
+    max_size = 5 * 1024 * 1024  # 5MB
 
-    # run agent    
-    final_result = current = ""
-    with strands_agent.mcp_manager.get_active_clients(mcp_servers) as _:
-        agent_stream = strands_agent.agent.stream_async(query)
-        
-        async for event in agent_stream:
-            text = ""            
-            if "data" in event:
-                text = event["data"]
-                logger.info(f"[data] {text}")
-                current += text
-                queue.stream(current)
+    while width * height > 2000000:
+        width = int(width / 2)
+        height = int(height / 2)
+        isResized = True
 
-            elif "result" in event:
-                final = event["result"]                
-                message = final.message
-                if message:
-                    content = message.get("content", [])
-                    result = content[0].get("text", "")
-                    logger.info(f"[result] {result}")
-                    final_result = result
+    if isResized:
+        img = img.resize((width, height))
 
-            elif "current_tool_use" in event:
-                current_tool_use = event["current_tool_use"]
-                logger.info(f"current_tool_use: {current_tool_use}")
-                name = current_tool_use.get("name", "")
-                input_val = current_tool_use.get("input", "")
-                toolUseId = current_tool_use.get("toolUseId", "")
+    max_attempts = 5
+    img_base64 = ""
+    base64_size = 0
+    for attempt in range(max_attempts):
+        buffer = BytesIO()
+        img.save(buffer, format="PNG", optimize=True)
+        img_bytes = buffer.getvalue()
+        img_base64 = base64.b64encode(img_bytes).decode("utf-8")
 
-                text = f"name: {name}, input: {input_val}"
-                logger.info(f"[current_tool_use] {text}")
+        base64_size = len(img_base64.encode('utf-8'))
+        logger.info(f"attempt {attempt + 1}: base64_size = {base64_size} bytes")
 
-                queue.register_tool(toolUseId, name)
-                queue.tool_update(toolUseId, f"Tool: {name}, Input: {input_val}")
-                current = ""
+        if base64_size <= max_size:
+            break
+        width = int(width * 0.8)
+        height = int(height * 0.8)
+        img = img.resize((width, height))
+        logger.info(f"resizing to {width}x{height} due to size limit")
 
-            elif "message" in event:
-                message = event["message"]
-                logger.info(f"[message] {message}")
+    if base64_size > max_size:
+        raise Exception("이미지 크기가 너무 큽니다. 5MB 이하의 이미지를 사용해주세요.")
 
-                if "content" in message:
-                    msg_content = message["content"]
-                    logger.info(f"tool content: {msg_content}")
-                    for content_item in msg_content:
-                        if "toolResult" not in content_item:
-                            continue
-                        toolResult = content_item["toolResult"]
-                        toolUseId = toolResult["toolUseId"]
-                        toolContent = toolResult["content"]
-                        toolResultText = toolContent[0].get("text", "")
-                        tool_name = queue.get_tool_name(toolUseId)
-                        logger.info(f"[toolResult] {toolResultText}, [toolUseId] {toolUseId}")
-                        queue.notify(f"Tool Result: {str(toolResultText)}")
+    return img_base64
 
-                        parsed_content, urls, refs = get_tool_info(tool_name, toolResultText)
-                        if refs:
-                            for r in refs:
-                                references.append(r)
-                            logger.info(f"refs: {refs}")
-                        if urls:
-                            for url in urls:
-                                image_url.append(url)
-                            logger.info(f"urls: {urls}")
 
-                        if parsed_content:
-                            logger.info(f"content: {parsed_content}")
-                
-            elif "contentBlockDelta" or "contentBlockStop" or "messageStop" or "metadata" in event:
-                pass
+def extract_text(img_base64):
+    """Extract text from an image using multimodal LLM."""
+    multimodal = get_chat(extended_thinking=reasoning_mode)
+    query = "텍스트를 추출해서 markdown 포맷으로 변환하세요. <result> tag를 붙여주세요."
 
-            else:
-                logger.info(f"event: {event}")
+    messages = [
+        HumanMessage(
+            content=[
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{img_base64}",
+                    },
+                },
+                {"type": "text", "text": query},
+            ]
+        )
+    ]
 
-        if references:
-            ref = "\n\n### Reference\n"
-            for i, reference in enumerate(references):
-                content = reference['content'][:100].replace("\n", "")
-                ref += f"{i+1}. [{reference['title']}]({reference['url']}), {content}...\n"    
-            final_result += ref
+    extracted_text = ""
+    for attempt in range(5):
+        logger.info(f"extract_text attempt: {attempt}")
+        try:
+            result = multimodal.invoke(messages)
+            extracted_text = result.content
+            break
+        except Exception:
+            err_msg = traceback.format_exc()
+            logger.info(f"error message: {err_msg}")
 
-        if containers is not None:
-            queue.result(final_result)
-    
-    return final_result, image_url
+    logger.info(f"extracted_text: {extracted_text}")
+    if len(extracted_text) < 10:
+        extracted_text = "텍스트를 추출하지 못하였습니다."
+
+    return extracted_text
+
+
+def summary_image(img_base64, instruction):
+    """Summarize an image using multimodal LLM."""
+    llm = get_chat(extended_thinking=reasoning_mode)
+
+    if instruction:
+        logger.info(f"instruction: {instruction}")
+        query = f"{instruction}. <result> tag를 붙여주세요. 한국어로 답변하세요."
+    else:
+        query = "이미지가 의미하는 내용을 풀어서 자세히 알려주세요. markdown 포맷으로 답변을 작성합니다."
+
+    messages = [
+        HumanMessage(
+            content=[
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{img_base64}",
+                    },
+                },
+                {"type": "text", "text": query},
+            ]
+        )
+    ]
+
+    for attempt in range(5):
+        logger.info(f"summary_image attempt: {attempt}")
+        try:
+            result = llm.invoke(messages)
+            extracted_text = result.content
+            break
+        except Exception:
+            err_msg = traceback.format_exc()
+            logger.info(f"error message: {err_msg}")
+            raise Exception("Not able to request to LLM")
+
+    return extracted_text
+
+
+def summarize_image(image_content, prompt, st):
+    """Full image analysis: resize, extract text, summarize."""
+    img_base64 = _resize_and_encode(image_content)
+
+    if debug_mode == "Enable":
+        status = "이미지에서 텍스트를 추출합니다."
+        logger.info(f"status: {status}")
+        st.info(status)
+
+    text = extract_text(img_base64)
+
+    if text.find('<result>') != -1:
+        extracted_text = text[text.find('<result>') + 8:text.find('</result>')]
+    else:
+        extracted_text = text
+
+    if debug_mode == "Enable":
+        status = f"### 추출된 텍스트\n\n{extracted_text}"
+        logger.info(f"status: {status}")
+        st.info(status)
+
+    if debug_mode == "Enable":
+        status = "이미지의 내용을 분석합니다."
+        logger.info(f"status: {status}")
+        st.info(status)
+
+    image_summary = summary_image(img_base64, prompt)
+
+    if image_summary.find('<result>') != -1:
+        image_summary = image_summary[image_summary.find('<result>') + 8:image_summary.find('</result>')]
+    logger.info(f"image summary: {image_summary}")
+
+    contents = f"## 이미지 분석\n\n{image_summary}"
+    logger.info(f"image contents: {contents}")
+
+    return contents

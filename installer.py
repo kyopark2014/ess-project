@@ -11,16 +11,15 @@ import logging
 import argparse
 import base64
 import ipaddress
-import os
 from typing import Dict, List, Optional
 from botocore.exceptions import ClientError
 import urllib.request
 import urllib.error
 
 # Configuration
-project_name = "ess" # at least 3 characters
+project_name = "strands-mcp" # at least 3 characters
 region = "us-west-2"
-git_name = "ess-project"
+git_name = "strands-mcp"
 
 sts_client = boto3.client("sts", region_name=region)
 account_id = sts_client.get_caller_identity()["Account"]
@@ -53,12 +52,13 @@ def setup_logging(log_level=logging.INFO):
         format=log_format,
         datefmt=date_format,
         handlers=[
-            logging.StreamHandler(),
-            # logging.FileHandler(f"installer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            logging.StreamHandler()
+            #logging.FileHandler(f"installer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
         ]
     )
     
     return logging.getLogger(__name__)
+
 
 logger = setup_logging()
 
@@ -306,23 +306,6 @@ def create_knowledge_base_role() -> str:
     }
     attach_inline_policy(role_name, f"bedrock-agent-bedrock-policy-for-{project_name}", bedrock_policy)
     
-    # AWS Marketplace policy (required for model access via inference profiles)
-    marketplace_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": [
-                    "aws-marketplace:ViewSubscriptions",
-                    "aws-marketplace:Subscribe",
-                    "aws-marketplace:Unsubscribe"
-                ],
-                "Resource": ["*"]
-            }
-        ]
-    }
-    attach_inline_policy(role_name, f"aws-marketplace-policy-for-{project_name}", marketplace_policy)
-    
     return role_arn
 
 
@@ -426,8 +409,7 @@ def create_ec2_role(knowledge_base_role_arn: str) -> str:
     
     managed_policies = [
         "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
-        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-        "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     ]
     role_arn = create_iam_role(role_name, assume_role_policy, managed_policies)
     
@@ -473,19 +455,14 @@ def create_ec2_role(knowledge_base_role_arn: str) -> str:
                         "Effect": "Allow",
                         "Action": [
                             "bedrock:InvokeModel",
-                            "bedrock:InvokeModelWithResponseStream",
-                            "bedrock:GetFoundationModel",
-                            "bedrock:GetInferenceProfile",
-                            "bedrock:ListFoundationModels",
-                            "bedrock:ListInferenceProfiles"
+                            "bedrock:InvokeModelWithResponseStream"
                         ],
                         "Resource": [
                             "arn:aws:bedrock:*:*:inference-profile/*",
-                            "arn:aws:bedrock:*::foundation-model/*",
-                            "arn:aws:bedrock:us-west-2::foundation-model/*",
-                            "arn:aws:bedrock:us-east-1::foundation-model/*",
-                            "arn:aws:bedrock:us-east-2::foundation-model/*",
-                            "arn:aws:bedrock:ap-northeast-2::foundation-model/*"
+                            "arn:aws:bedrock:us-west-2:*:foundation-model/*",
+                            "arn:aws:bedrock:us-east-1:*:foundation-model/*",
+                            "arn:aws:bedrock:us-east-2:*:foundation-model/*",
+                            "arn:aws:bedrock:ap-northeast-2:*:foundation-model/*"
                         ]
                     }
                 ]
@@ -648,23 +625,6 @@ def create_ec2_role(knowledge_base_role_arn: str) -> str:
                     }
                 ]
             }
-        },
-        {
-            "name": f"aws-marketplace-policy-for-{project_name}",
-            "document": {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Action": [
-                            "aws-marketplace:ViewSubscriptions",
-                            "aws-marketplace:Subscribe",
-                            "aws-marketplace:Unsubscribe"
-                        ],
-                        "Resource": ["*"]
-                    }
-                ]
-            }
         }
     ]
     
@@ -692,20 +652,29 @@ def create_secrets() -> Dict[str, str]:
     logger.info("Please enter API keys when prompted (press Enter to skip and leave empty):")
     
     secrets = {
-        "weather": {
-            "name": f"openweathermap-{project_name}",
-            "description": "secret for weather api key",
-            "secret_value": {
-                "project_name": project_name,
-                "weather_api_key": ""
-            }
-        },
         "tavily": {
             "name": f"tavilyapikey-{project_name}",
             "description": "secret for tavily api key",
             "secret_value": {
                 "project_name": project_name,
                 "tavily_api_key": ""
+            }
+        },
+        "notion": {
+            "name": f"notionapikey-{project_name}",
+            "description": "secret for notion api key",
+            "secret_value": {
+                "project_name": project_name,
+                "notion_api_key": ""
+            }
+        },
+        "slack": {
+            "name": f"slackapikey-{project_name}",
+            "description": "secret for slack api key",
+            "secret_value": {
+                "project_name": project_name,
+                "slack_team_id": "",
+                "slack_bot_token": ""
             }
         }
     }
@@ -721,14 +690,20 @@ def create_secrets() -> Dict[str, str]:
         except ClientError as e:
             if e.response["Error"]["Code"] == "ResourceNotFoundException":
                 # Secret doesn't exist, prompt for API key and create it
-                if key == "weather":
-                    logger.info(f"Enter credential of {secret_config['name']} (Weather API Key - OpenWeatherMap):")
-                    api_key = input(f"Creating {secret_config['name']} - Weather API Key (OpenWeatherMap): ").strip()
-                    secret_config["secret_value"]["weather_api_key"] = api_key
-                elif key == "tavily":
+                if key == "tavily":
                     logger.info(f"Enter credential of {secret_config['name']} (Tavily API Key):")
                     api_key = input(f"Creating {secret_config['name']} - Tavily API Key: ").strip()
                     secret_config["secret_value"]["tavily_api_key"] = api_key
+                elif key == "notion":
+                    logger.info(f"Enter credential of {secret_config['name']} (Notion API Key):")
+                    api_key = input(f"Creating {secret_config['name']} - Notion API Key: ").strip()
+                    secret_config["secret_value"]["notion_api_key"] = api_key
+                elif key == "slack":
+                    logger.info(f"Enter credential of {secret_config['name']} (Slack Team ID and Bot Token):")
+                    team_id = input(f"Creating {secret_config['name']} - Slack Team ID: ").strip()
+                    bot_token = input(f"Creating {secret_config['name']} - Slack Bot Token: ").strip()
+                    secret_config["secret_value"]["slack_team_id"] = team_id
+                    secret_config["secret_value"]["slack_bot_token"] = bot_token
                 
                 # Create the secret
                 try:
@@ -2752,8 +2727,7 @@ def create_knowledge_base_with_opensearch(opensearch_info: Dict[str, str], knowl
         raise Exception("Failed to create vector index in OpenSearch collection")
     
     bedrock_agent_client = boto3.client("bedrock-agent", region_name=region)
-    # parsing_model_arn = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    parsing_model_arn = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/global.anthropic.claude-sonnet-4-20250514-v1:0"
+    parsing_model_arn = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     # Check if Knowledge Base already exists
     try:
@@ -2775,21 +2749,8 @@ def create_knowledge_base_with_opensearch(opensearch_info: Dict[str, str], knowl
                     delete_knowledge_base(kb["knowledgeBaseId"])
                     break                    
                 else:
-                    logger.info(f"Knowledge Base is using correct OpenSearch collection")
-                    # Look up existing data source ID
-                    existing_data_source_id = None
-                    try:
-                        ds_response = bedrock_agent_client.list_data_sources(
-                            knowledgeBaseId=kb["knowledgeBaseId"],
-                            maxResults=10
-                        )
-                        for ds in ds_response.get("dataSourceSummaries", []):
-                            existing_data_source_id = ds["dataSourceId"]
-                            logger.info(f"  Found existing data source: {existing_data_source_id}")
-                            break
-                    except Exception as ds_err:
-                        logger.warning(f"  Could not list data sources: {ds_err}")
-                    return kb["knowledgeBaseId"], existing_data_source_id
+                    logger.info(f"Knowledge Base is using correct OpenSearch collection")                
+                    return kb["knowledgeBaseId"]
         logger.info("  Knowledge Base does not exist. Creating new one...")
     except Exception as e:
         logger.debug(f"Error checking existing Knowledge Base: {e}")
@@ -2915,7 +2876,7 @@ def create_knowledge_base_with_opensearch(opensearch_info: Dict[str, str], knowl
     data_source_id = data_source_response["dataSource"]["dataSourceId"]
     logger.info(f"  ✓ Data source created: {data_source_id}")
     
-    return knowledge_base_id, data_source_id
+    return knowledge_base_id
 
 
 def create_agentcore_memory_role() -> str:
@@ -3101,7 +3062,7 @@ def create_cloudfront_distribution(alb_info: Dict[str, str], s3_bucket_name: str
             "Compress": True
         },
         "CacheBehaviors": {
-            "Quantity": 2,
+            "Quantity": 3,
             "Items": [
                 {
                     "PathPattern": "/images/*",
@@ -3120,6 +3081,21 @@ def create_cloudfront_distribution(alb_info: Dict[str, str], s3_bucket_name: str
                 },
                 {
                     "PathPattern": "/docs/*",
+                    "TargetOriginId": f"s3-{project_name}",
+                    "ViewerProtocolPolicy": "redirect-to-https",
+                    "AllowedMethods": {
+                        "Quantity": 2,
+                        "Items": ["GET", "HEAD"],
+                        "CachedMethods": {
+                            "Quantity": 2,
+                            "Items": ["GET", "HEAD"]
+                        }
+                    },
+                    "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+                    "Compress": True
+                },
+                {
+                    "PathPattern": "/artifacts/*",
                     "TargetOriginId": f"s3-{project_name}",
                     "ViewerProtocolPolicy": "redirect-to-https",
                     "AllowedMethods": {
@@ -3184,7 +3160,7 @@ def create_cloudfront_distribution(alb_info: Dict[str, str], s3_bucket_name: str
         logger.info(f"✓ CloudFront distribution created (ALB + S3): {distribution_domain}")
         logger.info(f"  Distribution ID: {distribution_id}")
         logger.info(f"  Default origin: ALB {alb_info['dns']}")
-        logger.info(f"  /images/* and /docs/* origins: S3 bucket {s3_bucket_name}")
+        logger.info(f"  /images/*, /docs/*, /artifacts/* origins: S3 bucket {s3_bucket_name}")
         logger.warning("  Note: CloudFront distribution may take 15-20 minutes to deploy")
         
     except ClientError as e:
@@ -3339,8 +3315,7 @@ def run_setup_script_via_ssm(instance_id: str, environment: Dict[str, str], git_
 def create_ec2_instance(vpc_info: Dict[str, str], ec2_role_arn: str, 
                        knowledge_base_role_arn: str, opensearch_info: Dict[str, str],
                        s3_bucket_name: str, cloudfront_domain: str,
-                       agentcore_memory_role_arn: str, knowledge_base_id: str,
-                       data_source_id: str = None) -> str:
+                       agentcore_memory_role_arn: str, knowledge_base_id: str) -> str:
     """Create EC2 instance."""
     logger.info("[8/10] Creating EC2 instance")
     
@@ -3397,7 +3372,6 @@ def create_ec2_instance(vpc_info: Dict[str, str], ec2_role_arn: str,
         "accountId": account_id,
         "region": region,
         "knowledge_base_id": knowledge_base_id,
-        "data_source_id": data_source_id if data_source_id else "",
         "knowledge_base_role": knowledge_base_role_arn,
         "collectionArn": opensearch_info["arn"],
         "opensearch_url": opensearch_info["endpoint"],
@@ -3736,8 +3710,6 @@ def run_setup_on_existing_instance(instance_id: Optional[str] = None):
                 "projectName": config_data.get("projectName", project_name),
                 "accountId": config_data.get("accountId", account_id),
                 "region": config_data.get("region", region),
-                "knowledge_base_id": config_data.get("knowledge_base_id", ""),
-                "data_source_id": config_data.get("data_source_id", ""),
                 "knowledge_base_role": config_data.get("knowledge_base_role", ""),
                 "collectionArn": config_data.get("collectionArn", ""),
                 "opensearch_url": config_data.get("opensearch_url", ""),
@@ -3754,8 +3726,6 @@ def run_setup_on_existing_instance(instance_id: Optional[str] = None):
             "projectName": project_name,
             "accountId": account_id,
             "region": region,
-            "knowledge_base_id": "",
-            "data_source_id": "",
             "knowledge_base_role": "",
             "collectionArn": "",
             "opensearch_url": "",
@@ -3957,19 +3927,6 @@ def main():
     
     start_time = time.time()
     
-    # Initialize deployment result variables for config.json generation
-    s3_bucket_name = None
-    knowledge_base_role_arn = None
-    agentcore_memory_role_arn = None
-    opensearch_info = None
-    knowledge_base_id = None
-    data_source_id = None
-    vpc_info = None
-    alb_info = None
-    cloudfront_info = None
-    instance_id = None
-    deployment_success = False
-    
     try:
         # 1. Create S3 bucket
         s3_bucket_name = create_s3_bucket()
@@ -3991,7 +3948,7 @@ def main():
         logger.info(f"OpenSearch collection created...")
         
         # 4.5. Create Knowledge Base with correct OpenSearch collection        
-        knowledge_base_id, data_source_id = create_knowledge_base_with_opensearch(opensearch_info, knowledge_base_role_arn, s3_bucket_name)
+        knowledge_base_id = create_knowledge_base_with_opensearch(opensearch_info, knowledge_base_role_arn, s3_bucket_name)
         logger.info(f"Knowledge base created...")
         
         # 5. Create VPC
@@ -4010,7 +3967,7 @@ def main():
         instance_id = create_ec2_instance(
             vpc_info, ec2_role_arn, knowledge_base_role_arn,
             opensearch_info, s3_bucket_name, cloudfront_info["domain"],
-            agentcore_memory_role_arn, knowledge_base_id, data_source_id
+            agentcore_memory_role_arn, knowledge_base_id
         )
         logger.info(f"EC2 instance created...")
         
@@ -4021,8 +3978,6 @@ def main():
         # check whether the applireation is ready
         logger.info(f"Checking if application is ready: {cloudfront_info['domain']}")
         check_application_ready(cloudfront_info["domain"])        
-        
-        deployment_success = True
         
         # Output summary
         elapsed_time = time.time() - start_time
@@ -4049,6 +4004,44 @@ def main():
         logger.info("Note: EC2 instance user data script will install and start the application")
         logger.info("="*60)
         
+        # Update application/config.json
+        config_path = "application/config.json"
+        config_data = {}
+        
+        # Read existing config if it exists
+        try:
+            with open(config_path, 'r') as f:
+                config_data = json.load(f)
+        except FileNotFoundError:
+            logger.info(f"Creating new {config_path}")
+        except Exception as e:
+            logger.warning(f"Could not read existing {config_path}: {e}")
+        
+        # Update only necessary fields
+        config_data.update({
+            "projectName": project_name,
+            "accountId": account_id,
+            "region": region,
+            "knowledge_base_id": knowledge_base_id,
+            "knowledge_base_role": knowledge_base_role_arn,
+            "collectionArn": opensearch_info["arn"],
+            "opensearch_url": opensearch_info["endpoint"],
+            "s3_bucket": s3_bucket_name,
+            "s3_arn": f"arn:aws:s3:::{s3_bucket_name}",
+            "sharing_url": f"https://{cloudfront_info['domain']}",
+            "agentcore_memory_role": agentcore_memory_role_arn
+        })
+        
+        # Log the OpenSearch collection ARN for verification
+        logger.info(f"OpenSearch Collection ARN: {opensearch_info['arn']}")
+        logger.info(f"OpenSearch Collection Endpoint: {opensearch_info['endpoint']}")
+        
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            logger.info(f"✓ Updated {config_path}")
+        except Exception as e:
+            logger.warning(f"Could not update {config_path}: {e}")
         
         logger.info("="*60)
         logger.info("")
@@ -4074,58 +4067,6 @@ def main():
         import traceback
         logger.error(traceback.format_exc())
         raise
-    finally:
-        # Always generate application/config.json with whatever data is available
-        config_path = "application/config.json"
-        config_data = {}
-        
-        # Read existing config if it exists
-        try:
-            with open(config_path, 'r') as f:
-                config_data = json.load(f)
-        except FileNotFoundError:
-            logger.info(f"Creating new {config_path}")
-        except Exception as e:
-            logger.warning(f"Could not read existing {config_path}: {e}")
-        
-        # Update fields with available deployment results
-        config_data.update({
-            "projectName": project_name,
-            "accountId": account_id,
-            "region": region,
-        })
-        if knowledge_base_id:
-            config_data["knowledge_base_id"] = knowledge_base_id
-        if data_source_id:
-            config_data["data_source_id"] = data_source_id
-        if knowledge_base_role_arn:
-            config_data["knowledge_base_role"] = knowledge_base_role_arn
-        if opensearch_info:
-            config_data["collectionArn"] = opensearch_info.get("arn", "")
-            config_data["opensearch_url"] = opensearch_info.get("endpoint", "")
-        if s3_bucket_name:
-            config_data["s3_bucket"] = s3_bucket_name
-            config_data["s3_arn"] = f"arn:aws:s3:::{s3_bucket_name}"
-        if cloudfront_info:
-            config_data["sharing_url"] = f"https://{cloudfront_info.get('domain', '')}"
-        if agentcore_memory_role_arn:
-            config_data["agentcore_memory_role"] = agentcore_memory_role_arn
-        
-        # Log the OpenSearch collection info if available
-        if opensearch_info:
-            logger.info(f"OpenSearch Collection ARN: {opensearch_info.get('arn', 'N/A')}")
-            logger.info(f"OpenSearch Collection Endpoint: {opensearch_info.get('endpoint', 'N/A')}")
-        
-        try:
-            os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, 'w') as f:
-                json.dump(config_data, f, indent=2)
-            if deployment_success:
-                logger.info(f"✓ Updated {config_path}")
-            else:
-                logger.info(f"✓ Saved partial deployment info to {config_path}")
-        except Exception as e:
-            logger.warning(f"Could not update {config_path}: {e}")
 
 
 if __name__ == "__main__":

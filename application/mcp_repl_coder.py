@@ -33,12 +33,12 @@ def load_config():
 
 config = load_config()
 
-region = config.get("region", "us-west-2")
+region = config.get("region", "ap-northeast-2")
 projectName = config.get("projectName", "es")
 
 s3_prefix = "docs"
 s3_image_prefix = "images"
-model_name = "Claude 4.0 Sonnet"
+model_name = "Claude 4.5 Haiku"
 s3_bucket = config.get("s3_bucket")
 path = config.get('sharing_url', '')
 

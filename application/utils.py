@@ -4,6 +4,8 @@ import json
 import traceback
 import boto3
 import os
+import asyncio
+import re
 from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 
 logging.basicConfig(
@@ -15,12 +17,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mcp-basic")
 
-workingDir = os.path.dirname(os.path.abspath(__file__))
-config_path = os.path.join(workingDir, "config.json")
-
 aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
 aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
 aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
+aws_region = os.environ.get('AWS_DEFAULT_REGION', 'us-west-2')
+
+workingDir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(workingDir, "config.json")
 
 def load_config():
     config = None
@@ -53,6 +56,7 @@ config = load_config()
 
 bedrock_region = config['region']
 projectName = config['projectName']
+accountId = config['accountId']
         
 def get_contents_type(file_name):
     if file_name.lower().endswith((".jpg", ".jpeg")):
@@ -81,6 +85,21 @@ def get_contents_type(file_name):
         content_type = "no info"    
     return content_type
 
+def load_mcp_env():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    mcp_env_path = os.path.join(script_dir, "mcp.env")
+    
+    with open(mcp_env_path, "r", encoding="utf-8") as f:
+        mcp_env = json.load(f)
+    return mcp_env
+
+def save_mcp_env(mcp_env):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    mcp_env_path = os.path.join(script_dir, "mcp.env")
+    
+    with open(mcp_env_path, "w", encoding="utf-8") as f:
+        json.dump(mcp_env, f)
+
 # api key to get weather information in agent
 if aws_access_key and aws_secret_key:
     secretsmanager = boto3.client(
@@ -96,50 +115,191 @@ else:
         region_name=bedrock_region
     )
 
-# api key for weather
-weather_api_key = ""
+# api key for slack
+slack_bot_token = ""
+slack_team_id = ""
 try:
-    get_weather_api_secret = secretsmanager.get_secret_value(
-        SecretId=f"openweathermap-{projectName}"
+    get_slack_secret = secretsmanager.get_secret_value(
+        SecretId=f"slackapikey-{projectName}"
     )
-    #print('get_weather_api_secret: ', get_weather_api_secret)
-    secret = json.loads(get_weather_api_secret['SecretString'])
-    #print('secret: ', secret)
-    weather_api_key = secret['weather_api_key']
-
+    secret = json.loads(get_slack_secret['SecretString'])
+    slack_bot_token = secret.get('slack_bot_token', '')
+    slack_team_id = secret.get('slack_team_id', '')
+    if slack_bot_token:
+        os.environ["SLACK_BOT_TOKEN"] = slack_bot_token
+    if slack_team_id:
+        os.environ["SLACK_TEAM_ID"] = slack_team_id
 except Exception as e:
-    # raise e
+    logger.info(f"Slack credential is required: {e}")
     pass
 
-# api key to use Tavily Search
+# api key to use Tavily Search (Secrets Manager or env TAVILY_API_KEY)
 tavily_key = tavily_api_wrapper = ""
 try:
     get_tavily_api_secret = secretsmanager.get_secret_value(
         SecretId=f"tavilyapikey-{projectName}"
     )
-    #print('get_tavily_api_secret: ', get_tavily_api_secret)
-    secret = json.loads(get_tavily_api_secret['SecretString'])
-    #print('secret: ', secret)
+    secret = json.loads(get_tavily_api_secret["SecretString"])
 
     if "tavily_api_key" in secret:
-        tavily_key = secret['tavily_api_key']
-        #print('tavily_api_key: ', tavily_api_key)
+        tavily_key = secret["tavily_api_key"]
 
         if tavily_key:
             tavily_api_wrapper = TavilySearchAPIWrapper(tavily_api_key=tavily_key)
-            #     os.environ["TAVILY_API_KEY"] = tavily_key
-
+            os.environ["TAVILY_API_KEY"] = tavily_key
         else:
-            logger.info(f"tavily_key is required.")
-except Exception as e: 
-    logger.info(f"Tavily credential is required: {e}")
-    # raise e
-    pass
+            logger.info("tavily_api_key in secret is empty.")
+except Exception as e:
+    logger.warning(
+        "Tavily AWS secret unavailable (%s). Set TAVILY_API_KEY env or create secret tavilyapikey-%s.",
+        e,
+        projectName,
+    )
 
-knowledge_base_id = config.get('knowledge_base_id')
-data_source_id = config.get('data_source_id')
-region = config.get('region')
-s3_bucket = config.get('s3_bucket')
+if not tavily_key and os.environ.get("TAVILY_API_KEY"):
+    tavily_key = os.environ["TAVILY_API_KEY"].strip()
+    if tavily_key:
+        tavily_api_wrapper = TavilySearchAPIWrapper(tavily_api_key=tavily_key)
+
+# api key to use notion
+notion_key = ""
+async def generate_pdf_report(body: str, request_id: str) -> str:
+    """Generate a PDF report from markdown content using reportlab.
+
+    Args:
+        body: Markdown content string.
+        request_id: Unique identifier used for the output filename.
+
+    Returns:
+        Output PDF file path on success, empty string on failure.
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            PageBreak, HRFlowable,
+        )
+        from reportlab.lib import colors
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        pdf_filename = f"artifacts/{request_id}.pdf"
+        os.makedirs("artifacts", exist_ok=True)
+
+        font_name = "Helvetica"
+        cjk_font_paths = [
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ]
+        for fp in cjk_font_paths:
+            if os.path.isfile(fp):
+                try:
+                    pdfmetrics.registerFont(TTFont("CJKFont", fp))
+                    font_name = "CJKFont"
+                    break
+                except Exception:
+                    continue
+
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(
+            "KTitle", parent=styles["Title"], fontName=font_name, fontSize=18,
+            leading=24, spaceAfter=12,
+        ))
+        styles.add(ParagraphStyle(
+            "KH2", parent=styles["Heading2"], fontName=font_name, fontSize=14,
+            leading=20, spaceBefore=14, spaceAfter=8,
+        ))
+        styles.add(ParagraphStyle(
+            "KH3", parent=styles["Heading3"], fontName=font_name, fontSize=12,
+            leading=16, spaceBefore=10, spaceAfter=6,
+        ))
+        styles.add(ParagraphStyle(
+            "KBody", parent=styles["BodyText"], fontName=font_name, fontSize=10,
+            leading=15, spaceAfter=6,
+        ))
+        styles.add(ParagraphStyle(
+            "KBullet", parent=styles["BodyText"], fontName=font_name, fontSize=10,
+            leading=15, leftIndent=16, spaceAfter=3, bulletIndent=6,
+        ))
+
+        def _md_inline(text: str) -> str:
+            text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+            text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+            text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" color="blue">\1</a>', text)
+            return text
+
+        story = []
+        if not body:
+            body = "## 결과\n\n내용이 없습니다."
+
+        lines = body.split("\n")
+
+        for line in lines:
+            stripped = line.strip()
+
+            if stripped.startswith("# ") and not stripped.startswith("## "):
+                story.append(Paragraph(_md_inline(stripped[2:]), styles["KTitle"]))
+            elif stripped.startswith("### "):
+                story.append(Paragraph(_md_inline(stripped[4:]), styles["KH3"]))
+            elif stripped.startswith("## "):
+                story.append(Spacer(1, 4 * mm))
+                story.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
+                story.append(Paragraph(_md_inline(stripped[3:]), styles["KH2"]))
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                content = stripped[2:]
+                story.append(Paragraph(f"• {_md_inline(content)}", styles["KBullet"]))
+            elif re.match(r'^\d+\.\s', stripped):
+                story.append(Paragraph(_md_inline(stripped), styles["KBullet"]))
+            elif stripped.startswith("|") and "---" not in stripped:
+                pass  # skip raw table rows for simplicity
+            elif stripped == "":
+                story.append(Spacer(1, 3 * mm))
+            else:
+                story.append(Paragraph(_md_inline(stripped), styles["KBody"]))
+
+        def _run():
+            doc = SimpleDocTemplate(
+                pdf_filename, pagesize=A4,
+                topMargin=20 * mm, bottomMargin=20 * mm,
+                leftMargin=18 * mm, rightMargin=18 * mm,
+            )
+            doc.build(story)
+
+        await asyncio.to_thread(_run)
+        logger.info(f"PDF report generated: {pdf_filename}")
+        return pdf_filename
+
+    except Exception as e:
+        logger.error(f"Failed to generate PDF report: {e}")
+        return ""
+
+
+def get_notion_key():
+    global notion_key
+
+    if not notion_key:
+        try:
+            get_notion_api_secret = secretsmanager.get_secret_value(
+                SecretId=f"notionapikey-{projectName}"
+            )
+            #logger.info('get_perplexity_api_secret: ', get_perplexity_api_secret)
+            secret = json.loads(get_notion_api_secret['SecretString'])
+            #logger.info('secret: ', secret)
+
+            if "notion_api_key" in secret:
+                notion_key = secret['notion_api_key']
+                # logger.info('updated notion_key: ', notion_key)
+
+        except Exception as e: 
+            logger.info(f"nova act credential is required: {e}")
+            # raise e
+            pass
+    return notion_key
 
 def sanitize_data_source_name(name):
     """
@@ -180,6 +340,41 @@ def sanitize_data_source_name(name):
     
     return sanitized[:100]
 
+knowledge_base_id = config.get('knowledge_base_id')
+data_source_id = config.get('data_source_id')
+region = config.get('region', 'us-west-2')
+s3_bucket = config.get('s3_bucket', f'storage-for-{projectName}-{accountId}-{region}')
+sharing_url = config.get('sharing_url', '')
+
+def update_sharing_url():
+    """Look up CloudFront distribution domain for this project and save as sharing_url."""
+    try:
+        cf_client = boto3.client('cloudfront', region_name=region)
+        paginator = cf_client.get_paginator('list_distributions')
+        target_origin_id = f"s3-{projectName}"
+
+        for page in paginator.paginate():
+            dist_list = page.get('DistributionList', {})
+            for dist in dist_list.get('Items', []):
+                origins = dist.get('Origins', {}).get('Items', [])
+                for origin in origins:
+                    if origin['Id'] == target_origin_id:
+                        domain = dist['DomainName']
+                        url = f"https://{domain}"
+                        logger.info(f"sharing_url found: {url}")
+                        config['sharing_url'] = url
+                        with open(config_path, "w", encoding="utf-8") as f:
+                            json.dump(config, f, indent=2)
+                        return url
+        logger.warning(f"CloudFront distribution with origin '{target_origin_id}' not found")
+    except Exception:
+        err_msg = traceback.format_exc()
+        logger.info(f"Failed to look up sharing_url: {err_msg}")
+    return ''
+
+if not sharing_url:
+    sharing_url = update_sharing_url()
+
 def update_rag_info():
     knowledge_base_id = None
     data_source_id = None
@@ -200,7 +395,15 @@ def update_rag_info():
             for summary in summaries:
                 if summary["name"] == knowledge_base_name:
                     knowledge_base_id = summary["knowledgeBaseId"]
-                    logger.info(f"prepknowledge_base_idare: {knowledge_base_id}")
+                    logger.info(f"knowledge_base_id: {knowledge_base_id}")
+
+        if not knowledge_base_id:
+            logger.warning(f"Knowledge Base not found for project: {knowledge_base_name}")
+            return knowledge_base_id, data_source_id
+
+        if not s3_bucket:
+            logger.warning(f"s3_bucket is not configured, skipping data source lookup")
+            return knowledge_base_id, data_source_id
 
         response = client.list_data_sources(
             knowledgeBaseId=knowledge_base_id,
@@ -217,10 +420,15 @@ def update_rag_info():
                     logger.info(f"data_source_id: {data_source_id}")
                     break    
         
+        # save config
         config['knowledge_base_id'] = knowledge_base_id
         config['data_source_id'] = data_source_id
+        config['s3_bucket'] = s3_bucket
+        config['region'] = region
+        config['projectName'] = projectName
+        config['accountId'] = accountId
         with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
+            json.dump(config, f, indent=2)
 
     except Exception:
         err_msg = traceback.format_exc()

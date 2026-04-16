@@ -4,13 +4,15 @@ AWS Infrastructure Uninstaller
 This script deletes all AWS infrastructure resources created by installer.py.
 """
 
+import argparse
 import boto3
-import time
 import logging
+import sys
+import time
 from botocore.exceptions import ClientError
 
 # Configuration
-project_name = "ess" # at least 3 characters
+project_name = "strands-mcp" # at least 3 characters
 region = "us-west-2"
 
 sts_client = boto3.client("sts", region_name=region)
@@ -694,15 +696,11 @@ def delete_secrets():
     """Delete Secrets Manager secrets."""
     logger.info("[6/9] Deleting secrets")
     
+    # Secrets created by installer.py create_secrets()
     secret_names = [
-        f"openweathermap-{project_name}",
-        f"langsmithapikey-{project_name}",
         f"tavilyapikey-{project_name}",
-        f"perplexityapikey-{project_name}",
-        f"firecrawlapikey-{project_name}",
-        f"code-interpreter-{project_name}",
-        f"novaactapikey-{project_name}",
-        f"notionapikey-{project_name}"
+        f"notionapikey-{project_name}",
+        f"slackapikey-{project_name}",
     ]
     
     for secret_name in secret_names:
@@ -845,6 +843,23 @@ def main():
     logger.info(f"Region: {region}")
     logger.info(f"Account ID: {account_id}")
     logger.info("="*60)
+
+    parser = argparse.ArgumentParser(description="AWS Infrastructure Uninstaller")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt and proceed with deletion"
+    )
+    args = parser.parse_args()
+
+    if not args.yes:
+        print("\n" + "="*60)
+        print("WARNING: This will delete all resources created by installer.py")
+        print("="*60)
+        response = input("\nAre you sure you want to continue? (yes/no): ")
+        if response.lower() != 'yes':
+            print("Uninstallation cancelled.")
+            sys.exit(0)
     
     start_time = time.time()
     
