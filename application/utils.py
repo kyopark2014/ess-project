@@ -25,8 +25,27 @@ aws_session_token = os.environ.get('AWS_SESSION_TOKEN')
 def load_config():
     config = None
     
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading config: {e}")
+        config = {}
+        
+        project_name = "strands-mcp"
+
+        session = boto3.Session()
+        region = session.region_name
+
+        sts_client = boto3.client("sts", region_name=region)
+        account_id = sts_client.get_caller_identity()["Account"]
+
+        config['projectName'] = project_name
+        config['accountId'] = account_id
+        config['region'] = region
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
     
     return config
 
