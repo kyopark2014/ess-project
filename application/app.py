@@ -360,6 +360,8 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                         response = chat.summarize_image(file_bytes, prompt, st)
                         st.write(response)
 
+                        chat.save_chat_history("문서 분석 결과", assistant_content)
+
                         st.session_state.messages.append({"role": "assistant", "content": response})
 
         elif mode == 'Agent':
