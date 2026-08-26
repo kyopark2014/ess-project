@@ -1743,3 +1743,271 @@ def materialize_ess_docs_from_s3(
             traceback.format_exc(),
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# ESS document list — CloudFront URLs (PDF) + artifacts MD publish
+# ---------------------------------------------------------------------------
+
+def ess_pdf_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """S3 key for an ESS PDF uploaded via Configure (session-uploads staging)."""
+    return ess_docs_s3_key(file_name, user_id=user_id)
+
+
+def ess_pdf_public_url(file_name: str, user_id: str | None = None) -> str | None:
+    """CloudFront URL for ``session-uploads/{user}/ess/{pdf}`` when sharing_url is set."""
+    if not sharing_url:
+        return None
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    segment = sanitize_user_path_segment(user_id) or "default"
+    relative = (
+        f"{ESS_DOCS_S3_PREFIX}/{parse.quote(segment)}/ess/{parse.quote(safe_name)}"
+    )
+    return f"{sharing_url.rstrip('/')}/{relative}"
+
+
+def ess_md_artifacts_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """``artifacts/{projectName}/{user}/md/{stem}.md`` for CloudFront viewing."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    project = (projectName or "default").strip().strip("/") or "default"
+    return f"artifacts/{project}/{segment}/md/{safe_name}"
+
+
+def ess_md_artifacts_public_url(
+    file_name: str, user_id: str | None = None
+) -> str | None:
+    if not sharing_url:
+        return None
+    key = ess_md_artifacts_s3_key(file_name, user_id=user_id)
+    # Quote each path segment; keep slashes.
+    parts = [parse.quote(p) for p in key.split("/")]
+    return f"{sharing_url.rstrip('/')}/{'/'.join(parts)}"
+
+
+def ess_md_local_artifacts_path(
+    file_name: str, user_id: str | None = None
+) -> str:
+    """Local mirror: ``{user}/artifacts/md/{stem}.md``."""
+    artifacts = ensure_user_artifacts_dir(user_id)
+    md_dir = os.path.join(artifacts, "md")
+    os.makedirs(md_dir, exist_ok=True)
+    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    if not safe_name.lower().endswith(".md"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.md"
+    return os.path.join(md_dir, safe_name)
+
+
+def publish_ess_markdown_to_artifacts(
+    md_path: str,
+    user_id: str | None = None,
+    *,
+    file_name: str | None = None,
+) -> dict | None:
+    """Copy markdown next to artifacts and upload to S3 for CloudFront.
+
+    Target key: ``artifacts/{projectName}/{user_id}/md/{name}.md``.
+    """
+    from pathlib import Path
+
+    src = Path(md_path)
+    if not src.is_file():
+        logger.warning("ESS md publish skipped; missing file: %s", src)
+        return None
+
+    name = os.path.basename(file_name or src.name)
+    if not name.lower().endswith(".md"):
+        name = f"{os.path.splitext(name)[0]}.md"
+
+    local_dest = ess_md_local_artifacts_path(name, user_id=user_id)
+    try:
+        src_stat = src.stat()
+        if (
+            os.path.isfile(local_dest)
+            and os.path.getsize(local_dest) == src_stat.st_size
+            and os.path.getmtime(local_dest) >= src_stat.st_mtime
+            and s3_bucket
+        ):
+            # Local mirror already fresh — still ensure S3 object exists.
+            s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+            public_url = ess_md_artifacts_public_url(name, user_id=user_id)
+            head = _head_s3_object_quiet(s3_key)
+            if head and int(head.get("content_length") or 0) == src_stat.st_size:
+                return {
+                    "file_name": name,
+                    "local_path": local_dest,
+                    "s3_key": s3_key,
+                    "url": public_url,
+                    "uploaded": True,
+                    "skipped": True,
+                    "bytes": src_stat.st_size,
+                }
+        if os.path.abspath(str(src)) != os.path.abspath(local_dest):
+            import shutil
+
+            shutil.copy2(src, local_dest)
+    except Exception:
+        logger.exception("Failed to copy ESS md to local artifacts: %s", src)
+        local_dest = str(src.resolve())
+
+    s3_key = ess_md_artifacts_s3_key(name, user_id=user_id)
+    public_url = ess_md_artifacts_public_url(name, user_id=user_id)
+    result = {
+        "file_name": name,
+        "local_path": local_dest,
+        "s3_key": s3_key,
+        "url": public_url,
+        "uploaded": False,
+    }
+
+    if not s3_bucket:
+        logger.warning("s3_bucket not configured; ESS md kept local only")
+        return result
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        content_type = get_contents_type(name)
+        if content_type == "no info":
+            content_type = "text/markdown; charset=utf-8"
+        with open(local_dest, "rb") as f:
+            body = f.read()
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            Body=body,
+            ContentType=content_type,
+            CacheControl="no-cache, max-age=0, must-revalidate",
+        )
+        result["uploaded"] = True
+        result["bytes"] = len(body)
+        logger.info(
+            "ESS md published user=%s s3_key=%s bytes=%s url=%s",
+            sanitize_user_path_segment(user_id) or "default",
+            s3_key,
+            len(body),
+            public_url,
+        )
+        return result
+    except Exception:
+        logger.error(
+            "Error publishing ESS md to artifacts: %s", traceback.format_exc()
+        )
+        return result
+
+
+def head_ess_pdf_on_s3(file_name: str, user_id: str | None = None) -> bool:
+    """True when the ESS PDF object exists under session-uploads (CloudFront-ready)."""
+    key = ess_pdf_s3_key(file_name, user_id=user_id)
+    if not s3_bucket or not key:
+        return False
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.head_object(Bucket=s3_bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def _head_s3_object_quiet(s3_key: str) -> dict | None:
+    if not s3_bucket or not s3_key:
+        return None
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
+        return {
+            "content_length": int(response.get("ContentLength") or 0),
+            "content_type": response.get("ContentType"),
+        }
+    except Exception:
+        return None
+
+
+def enrich_ess_documents_for_ui(
+    documents: list[dict],
+    user_id: str | None = None,
+    *,
+    publish_md: bool = True,
+) -> list[dict]:
+    """Attach pdf/md view URLs for Document List UI.
+
+    PDF: prefer CloudFront ``session-uploads/{user}/ess/{pdf}``; else API fallback.
+    MD: copy+upload to ``artifacts/{project}/{user}/md/`` then expose CloudFront + viewer URL.
+    """
+    enriched: list[dict] = []
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        item = dict(doc)
+        filename = str(item.get("filename") or "").strip()
+        md_file = str(item.get("md_file") or item.get("md_path") or "").strip()
+        md_name = os.path.basename(md_file) if md_file else ""
+        if not md_name and filename:
+            stem = os.path.splitext(filename)[0]
+            md_name = f"{stem}.md"
+
+        pdf_name = filename if filename.lower().endswith(".pdf") else ""
+        if not pdf_name and filename:
+            # source may be pdf even if filename field uses another form
+            src = str(item.get("source_path") or "")
+            if src.lower().endswith(".pdf"):
+                pdf_name = os.path.basename(src)
+
+        local_md = str(item.get("md_path") or "").strip()
+        if local_md and not os.path.isfile(local_md) and md_name:
+            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            if os.path.isfile(candidate):
+                local_md = candidate
+        elif not local_md and md_name:
+            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            if os.path.isfile(candidate):
+                local_md = candidate
+
+        local_pdf = ""
+        if pdf_name:
+            candidate = os.path.join(ess_docs_dir(user_id), pdf_name)
+            if os.path.isfile(candidate):
+                local_pdf = candidate
+            else:
+                src = str(item.get("source_path") or "")
+                if src and os.path.isfile(src) and src.lower().endswith(".pdf"):
+                    local_pdf = src
+
+        pdf_cf = ess_pdf_public_url(pdf_name, user_id=user_id) if pdf_name else None
+        pdf_on_s3 = bool(pdf_name and head_ess_pdf_on_s3(pdf_name, user_id=user_id))
+        item["pdf_available"] = bool(local_pdf) or pdf_on_s3
+        item["pdf_url"] = pdf_cf if pdf_on_s3 else None
+        item["pdf_api_url"] = (
+            f"/api/ess/documents/{parse.quote(pdf_name)}/pdf" if pdf_name else None
+        )
+
+        md_url = None
+        md_published = False
+        if local_md and os.path.isfile(local_md) and publish_md:
+            published = publish_ess_markdown_to_artifacts(
+                local_md, user_id=user_id, file_name=md_name or None
+            )
+            if published:
+                md_url = published.get("url")
+                md_published = bool(published.get("uploaded"))
+                item["md_s3_key"] = published.get("s3_key")
+                item["md_local_artifacts"] = published.get("local_path")
+        elif md_name:
+            md_url = ess_md_artifacts_public_url(md_name, user_id=user_id)
+
+        item["md_available"] = bool(local_md and os.path.isfile(local_md))
+        item["md_url"] = md_url
+        item["md_published"] = md_published
+        item["md_viewer_url"] = (
+            f"/api/ess/documents/{parse.quote(md_name)}/markdown"
+            if md_name
+            else None
+        )
+        item["display_name"] = (
+            str(item.get("original_filename") or "").strip() or filename or md_name
+        )
+        enriched.append(item)
+    return enriched

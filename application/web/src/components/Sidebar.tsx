@@ -6,6 +6,7 @@ import type { Theme } from "../theme";
 import type { AppConfig, Task } from "../types";
 import { ConfigDrawer } from "./ConfigDrawer";
 import { EssConfigureModal } from "./EssConfigureModal";
+import { EssDocumentListModal } from "./EssDocumentListModal";
 import { KnowledgeGraphModal } from "./KnowledgeGraphModal";
 import { SyncProgressModal } from "./SyncProgressModal";
 import { TaskListItem } from "./TaskListItem";
@@ -29,7 +30,7 @@ import {
 type DrawerKind = "skill" | "mcp" | "model" | "appearance" | "ess" | null;
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
-const ESS_OPTIONS = ["Sync", "Configure"] as const;
+const ESS_OPTIONS = ["Sync", "Document List", "Configure"] as const;
 
 function themeToLabel(theme: Theme): string {
   return theme === "light" ? "Light" : "Dark";
@@ -87,6 +88,7 @@ export function Sidebar({
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [settingsExpanded, setSettingsExpanded] = useState(false);
   const [essConfigureOpen, setEssConfigureOpen] = useState(false);
+  const [essDocListOpen, setEssDocListOpen] = useState(false);
   const [essSyncBusy, setEssSyncBusy] = useState(false);
   const [essSyncMessage, setEssSyncMessage] = useState<string | null>(null);
   const [essSyncProgress, setEssSyncProgress] = useState<{
@@ -140,7 +142,7 @@ export function Sidebar({
       if (target.closest(".config-popover")) return;
       if (
         target.closest(
-          ".modal-overlay, .knowledge-graph-modal, .ess-configure-modal, .sync-progress-modal",
+          ".modal-overlay, .knowledge-graph-modal, .ess-configure-modal, .ess-doc-list-modal, .sync-progress-modal",
         )
       )
         return;
@@ -154,6 +156,11 @@ export function Sidebar({
   async function handleEssAction(choice: string) {
     if (choice === "Configure") {
       setEssConfigureOpen(true);
+      handleSettingApplied();
+      return;
+    }
+    if (choice === "Document List") {
+      setEssDocListOpen(true);
       handleSettingApplied();
       return;
     }
@@ -585,6 +592,10 @@ export function Sidebar({
             void handleEssAction("Sync");
           }}
         />
+      )}
+
+      {essDocListOpen && (
+        <EssDocumentListModal onClose={() => setEssDocListOpen(false)} />
       )}
 
       {essSyncPopupOpen && (

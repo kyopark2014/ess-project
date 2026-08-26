@@ -137,6 +137,34 @@ export interface EssConfig {
   foundation_model_parser_enabled?: boolean;
 }
 
+export interface EssDocument {
+  filename?: string;
+  original_filename?: string;
+  display_name?: string;
+  md_file?: string;
+  md_path?: string;
+  source_path?: string;
+  status?: string;
+  bytes?: number;
+  pdf_available?: boolean;
+  md_available?: boolean;
+  pdf_url?: string | null;
+  pdf_api_url?: string | null;
+  md_url?: string | null;
+  md_viewer_url?: string | null;
+  md_published?: boolean;
+}
+
+export interface EssDocListResult {
+  ess_dir: string;
+  docs_dir?: string;
+  documents: EssDocument[];
+  doc_count?: number;
+  doc_list?: string;
+  doc_list_updated_at?: string | null;
+  sharing_url?: string | null;
+}
+
 export interface EssDocsPresignResult {
   ok?: boolean;
   file_name: string;
@@ -212,6 +240,10 @@ export const api = {
     }),
   getEssStatus: () => request<EssStatus>("/api/ess/status"),
   getEssConfig: () => request<EssConfig>("/api/ess/config"),
+  getEssDocList: (publishMd = true) =>
+    request<EssDocListResult>(
+      `/api/ess/doc-list${publishMd ? "" : "?publish_md=0"}`,
+    ),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",

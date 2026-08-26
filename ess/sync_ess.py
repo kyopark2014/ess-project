@@ -888,6 +888,35 @@ def sync_user(
     synced_at = datetime.now(timezone.utc).isoformat()
     # Final registry rebuild so deleted/renamed files stay consistent.
     doc_list = sync_doc_list_with_filesystem(ess_root, user_id=user_id)
+
+    # Publish extracted markdown to artifacts/{project}/{user}/md/ for CloudFront.
+    published_md = 0
+    try:
+        from application import utils as app_utils
+
+        for doc in doc_list.get("documents") or []:
+            if not isinstance(doc, dict):
+                continue
+            md_path = str(doc.get("md_path") or "").strip()
+            md_file = str(doc.get("md_file") or "").strip()
+            if not md_path or not Path(md_path).is_file():
+                continue
+            result = app_utils.publish_ess_markdown_to_artifacts(
+                md_path,
+                user_id=user_id,
+                file_name=md_file or None,
+            )
+            if result and result.get("uploaded"):
+                published_md += 1
+        if published_md:
+            print(
+                f"[ess sync] published {published_md} markdown file(s) → "
+                f"artifacts/.../md/ (CloudFront)",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[ess sync] WARNING: markdown artifacts publish skipped: {exc}", flush=True)
+
     manifest = {
         "user_id": user_id,
         "synced_at": synced_at,
