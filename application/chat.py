@@ -1127,7 +1127,7 @@ def summary_image(img_base64, instruction):
 
 def extract_text(img_base64):    
     multimodal = get_chat()
-    query = "텍스트를 추출해서 markdown 포맷으로 변환하세요. <result> tag를 붙여주세요."
+    query = "텍스트를 추출해서 markdown 포맷으로 변환하세요. 원문의 언어를 그대로 유지하고 번역하지 마세요. <result> tag를 붙여주세요."
     
     extracted_text = ""
     messages = [
