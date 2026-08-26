@@ -2001,6 +2001,13 @@ def enrich_ess_documents_for_ui(
         item["md_available"] = bool(local_md and os.path.isfile(local_md))
         item["md_url"] = md_url
         item["md_published"] = md_published
+        if local_md and os.path.isfile(local_md):
+            try:
+                item["md_bytes"] = os.path.getsize(local_md)
+            except OSError:
+                item["md_bytes"] = None
+        else:
+            item["md_bytes"] = None
         item["md_viewer_url"] = (
             f"/api/ess/documents/{parse.quote(md_name)}/markdown"
             if md_name

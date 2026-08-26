@@ -1,0 +1,128 @@
+---
+name: testcase-generator
+description: >
+  Markdown 규격/표준 문서 경로를 받아 합격·불합격 판정용 Excel 테스트케이스(.xlsx)를 생성한다.
+  열: 규격명, 항목, 원문, 기준, 판정결과(합격/불합격/부분합격 선택), 비고.
+  결과 파일은 S3 `artifacts/{project}/{user}/tc/`에 업로드하고 CloudFront URL을 반환한다.
+  트리거: testcase-generator, 테스트케이스, test case, 엑셀 체크리스트,
+  ESS Document List에서 복사한 md 경로로 TC 생성, NFPA/UL 규격 합격불합격 표.
+---
+
+# testcase-generator
+
+Markdown 규격 문서에서 **검증 가능한 요구사항**을 추출해 Excel 테스트케이스를 만든다.
+
+## 필수 출력 열
+
+| 열 | 의미 | 규칙 |
+|----|------|------|
+| **규격명** | 표준 이름 (예: `NFPA 855 (2023)`, `UL 9540 (2025)`) | 문서 표제·연도 기준. 행마다 동일해도 각 행에 기입 |
+| **항목** | 조항 번호만 (예: `1.3`, `4.2.1.1`, `Table 1.3`) | 규격명을 넣지 않음 |
+| **원문** | 참고한 규격 텍스트 | **축약·요약 금지.** 해당 조항 본문을 그대로 옮긴다 |
+| **기준** | 합격/불합격/부분합격을 판단할 기준 | 무엇을 확인하면 되는지 명확히 서술 |
+| **판정결과** | Excel 드롭다운 | `합격` / `불합격` / `부분합격` 선택. 생성 시 비움 |
+| **비고** | 메모 | 생성 시 비움. 특이사항·근거 문서 링크 등 |
+
+## 에이전트 워크플로우
+
+### 1. 입력 확인
+
+사용자가 준 **markdown 파일 절대/상대 경로**를 확인한다.
+(ESS Document List의 **복사**로 얻은 `md_path`를 그대로 써도 된다.)
+
+```bash
+# 예
+/Users/.../.session_storage/ksdyb/ess/docs/NFPA855_2023.md
+```
+
+파일이 없으면 중단하고 경로를 확인한다.
+
+### 2. Markdown 읽기 & 테스트케이스 추출
+
+`read_file` 또는 `bash`로 본문을 읽고, **의무 조항(shall / 필수 / 요구)** 중심으로 행을 만든다.
+
+추출 규칙:
+
+1. 문서에서 **규격명(`standard`)**을 먼저 확정한다. 예: `NFPA 855 (2023)`.
+2. 조항 번호가 있는 요구사항마다 **1행**. **항목**에는 조항 번호만 (`4.2.1.1`), **규격명**은 별도 열.
+3. **원문**은 해당 조항 텍스트를 **생략 없이** 복사한다. (`…`, `등`, 임의 요약 금지)
+4. 목록·하위 (1)(2)(3)이 있으면 원문에 모두 포함하거나, 하위가 독립 검증이면 별도 행(`4.2.1.1(1)` 등)으로 분리한다.
+5. **기준**은 판정자가 문서·도면·현장으로 확인할 수 있게 작성한다.
+6. **판정결과**·**비고**는 비워 둔다 (엑셀에서 사용자가 선택·기입).
+7. 서문·저작권·목차·정의만 나열된 비검증 문장은 제외한다. (정의 조항이 설치 의무를 포함하면 포함)
+8. 문서가 매우 길면 사용자가 지정한 장/절을 우선하고, 범위 미지정 시 Chapter/주요 Construction·Performance 요구부터 추출한 뒤 행 수를 보고한다.
+
+JSON 초안을 `ARTIFACTS_DIR/tc/` 아래에 저장한다.
+
+```json
+{
+  "source_md": "/absolute/path/to/doc.md",
+  "title": "NFPA 855 2023 Test Cases",
+  "standard": "NFPA 855 (2023)",
+  "cases": [
+    {
+      "규격명": "NFPA 855 (2023)",
+      "항목": "4.2.1.1",
+      "원문": "The plans and specifications associated with an ESS ... shall be submitted to the AHJ for approval and include the following: ...",
+      "기준": "ESS 설치·교체·커미셔닝·사용 관련 도면·시방서가 AHJ에 제출되어 승인되었고, 요구 목록 항목이 누락 없이 포함되어 있음",
+      "판정결과": "",
+      "비고": ""
+    }
+  ]
+}
+```
+
+행에 `규격명`이 없으면 루트 `"standard"` 값이 채워진다. 예전에 `항목`에 규격명이 붙어 있어도 스크립트가 분리한다.
+
+### 3. Excel 생성 + S3 업로드
+
+`application` 디렉터리에서 번들 스크립트를 실행한다.
+
+```bash
+cd application
+python skills/testcase-generator/scripts/generate_testcase_xlsx.py \
+  --cases "$ARTIFACTS_DIR/tc/<stem>_cases.json" \
+  --user "<user_id>"
+```
+
+| 인자 | 설명 |
+|------|------|
+| `--cases` | 위 JSON 경로 (**필수**) |
+| `--user` | S3 경로의 user segment (세션 user_id) |
+| `--output-name` | 선택. 기본: `{md_stem}_testcase.xlsx` |
+| `--local-only` | S3 업로드 생략 (디버그용) |
+
+스크립트는:
+
+1. openpyxl로 `.xlsx` 작성 (시트명 `TestCases`, 열 순서 위 표와 동일)
+2. **판정결과** 열에 `합격` / `불합격` / `부분합격` 드롭다운(Data Validation) 적용
+3. 로컬 백업: `{SESSION_STORAGE}/{user}/artifacts/tc/{filename}.xlsx`
+4. S3 업로드 키: **`artifacts/{projectName}/{user}/tc/{filename}.xlsx`**
+5. stdout에 JSON 결과 출력 (CloudFront `url` 포함)
+
+### 4. 사용자에게 보고
+
+- **CloudFront URL** (`url`)을 반드시 제공한다.
+- 생성된 행 수, 소스 md 경로, S3 key를 짧게 요약한다.
+- `url`이 null이면 로컬 경로와 업로드 실패 사유를 알린다.
+
+## 판정결과 열
+
+- Excel에서만 선택: **합격**, **불합격**, **부분합격**
+- 생성 시 값은 비운다. **자동으로 합격/불합격을 단정하지 않는다.**
+
+## 의존성
+
+`openpyxl`, `boto3` (애플리케이션 환경에 포함). 스크립트가 config.json의 `s3_bucket`, `sharing_url`, `projectName`, `region`을 읽는다.
+
+## 예시
+
+사용자:  
+`/…/ess/docs/NFPA855_2023.md 경로로 테스트케이스 엑셀 만들어줘`  
+(또는 Document List에서 **복사**한 경로를 붙여 넣음)
+
+에이전트:
+
+1. md 읽기 → cases JSON 작성 (`규격명` / `항목` 분리)  
+2. `generate_testcase_xlsx.py --cases … --user ksdyb` 실행  
+3. 반환된 CloudFront URL 전달

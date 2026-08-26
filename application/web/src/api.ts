@@ -148,6 +148,7 @@ export interface EssDocument {
   bytes?: number;
   pdf_available?: boolean;
   md_available?: boolean;
+  md_bytes?: number | null;
   pdf_url?: string | null;
   pdf_api_url?: string | null;
   md_url?: string | null;

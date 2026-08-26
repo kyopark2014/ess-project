@@ -14,6 +14,12 @@ import {
   collectClipboardImages,
   useFileUpload,
 } from "../hooks/useFileUpload";
+import {
+  consumePendingLoadFile,
+  peekPendingLoadFile,
+  ESS_ATTACH_FILE_EVENT,
+} from "../pendingLoadFile";
+import type { LoadedFile } from "../hooks/useFileUpload";
 
 interface QueuedMessage {
   id: string;
@@ -92,6 +98,7 @@ export function ChatInput({
     uploadImageFiles,
     loadWorkspaceFiles,
     uploadRagFiles,
+    attachExistingFile,
     removeAttachment,
     removeLoadedFile,
     clearAttachments,
@@ -100,6 +107,19 @@ export function ChatInput({
     onDragLeave,
     onDrop,
   } = useFileUpload({ disabled });
+
+  // Document List 「복사」 → attach md chip immediately (no Load files step required).
+  useEffect(() => {
+    function onEssAttachFile(e: Event) {
+      const detail = (e as CustomEvent<LoadedFile>).detail;
+      if (!detail?.path) return;
+      attachExistingFile(detail);
+    }
+    window.addEventListener(ESS_ATTACH_FILE_EVENT, onEssAttachFile);
+    return () => {
+      window.removeEventListener(ESS_ATTACH_FILE_EVENT, onEssAttachFile);
+    };
+  }, [attachExistingFile]);
 
   function adjustInputHeight() {
     const el = textareaRef.current;
@@ -225,6 +245,12 @@ export function ChatInput({
   function openLoadFiles() {
     setMenuOpen(false);
     clearUploadError();
+    // Document List 「복사」로 스테이징된 md 경로는 파일 선택 없이 바로 첨부.
+    const pending = consumePendingLoadFile();
+    if (pending) {
+      attachExistingFile(pending);
+      return;
+    }
     loadInputRef.current?.click();
   }
 
@@ -267,6 +293,8 @@ export function ChatInput({
     }
     setMenuOpen((open) => !open);
   }
+
+  const pendingStagedFile = menuOpen ? peekPendingLoadFile() : null;
 
   const menu =
     menuOpen && menuPosition
@@ -345,7 +373,9 @@ export function ChatInput({
               <span className="chat-add-menu-text">
                 <span className="chat-add-menu-label">Load files</span>
                 <span className="chat-add-menu-desc">
-                  파일을 workspace에 올리고 질문과 함께 전달
+                  {pendingStagedFile
+                    ? `복사한 문서 첨부: ${pendingStagedFile.name}`
+                    : "파일을 workspace에 올리고 질문과 함께 전달"}
                 </span>
               </span>
             </button>

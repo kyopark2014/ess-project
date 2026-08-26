@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, type EssDocument } from "../api";
+import { copyDocumentForChat } from "../pendingLoadFile";
 
 interface Props {
   onClose: () => void;
@@ -75,16 +76,20 @@ export function EssDocumentListModal({ onClose }: Props) {
   async function copyMarkdownPath(doc: EssDocument) {
     const path = markdownPath(doc);
     if (!path) return;
+    const name = path.split("/").pop() || path;
+    const mdBytes = Number(doc.md_bytes);
+    // Attach chip immediately + stage for Load files; also copy path for skills.
+    copyDocumentForChat({
+      path,
+      name,
+      size: Number.isFinite(mdBytes) && mdBytes > 0 ? mdBytes : 0,
+    });
     try {
       await navigator.clipboard.writeText(path);
-      onClose();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? `경로 복사 실패: ${err.message}`
-          : "경로 복사에 실패했습니다.",
-      );
+    } catch {
+      // Clipboard is optional; chat attachment still works via event.
     }
+    onClose();
   }
 
   return createPortal(
@@ -164,7 +169,7 @@ export function EssDocumentListModal({ onClose }: Props) {
                       disabled={!canCopy}
                       title={
                         canCopy
-                          ? `Markdown 경로 복사\n${mdPath}`
+                          ? `입력창에 Markdown 첨부 + 경로 복사\n${mdPath}`
                           : "Markdown 경로 없음"
                       }
                       onClick={() => void copyMarkdownPath(doc)}
