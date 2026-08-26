@@ -16,7 +16,7 @@ Output:
     ...
 
 Dependencies:
-    pip install pymupdf          # imports as `fitz`
+    pip install pymupdf
 """
 
 import sys
@@ -34,12 +34,12 @@ def pdf_to_images(pdf_path: str, output_dir: str, dpi: int = 150) -> list[str]:
         List of absolute paths to the saved image files.
     """
     try:
-        import fitz  # PyMuPDF
+        import pymupdf
     except ImportError:
         print("PyMuPDF is not installed. Installing now …", file=sys.stderr)
         import subprocess
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf"], stdout=subprocess.DEVNULL)
-        import fitz
+        import pymupdf
 
     pdf_path = os.path.expanduser(pdf_path)
     if not os.path.isfile(pdf_path):
@@ -47,11 +47,11 @@ def pdf_to_images(pdf_path: str, output_dir: str, dpi: int = 150) -> list[str]:
 
     os.makedirs(output_dir, exist_ok=True)
 
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     total = len(doc)
     saved = []
     zoom = dpi / 72  # 72 dpi is the PDF default
-    mat = fitz.Matrix(zoom, zoom)
+    mat = pymupdf.Matrix(zoom, zoom)
 
     for i, page in enumerate(doc, start=1):
         pix = page.get_pixmap(matrix=mat, alpha=False)
