@@ -244,3 +244,21 @@ export function KnowledgeGraphIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+export function EssIcon({ className }: IconProps) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.15"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.5 2.5h3.2L8 4.2l1.3-1.7h3.2v11H9.3L8 11.8l-1.3 1.7H3.5z" />
+      <path d="M8 4.2v7.6" />
+    </svg>
+  );
+}

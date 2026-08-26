@@ -34,3 +34,6 @@ application/MEMORY.md
 graph/out/
 graph/corpus/
 graph/artifacts/
+
+# ESS pipeline local outputs
+ess/out/

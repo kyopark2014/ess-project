@@ -128,12 +128,143 @@ def user_graph_html_path(user_id: str | None) -> str:
     return os.path.join(SESSION_STORAGE_DIR, segment, "graph", "out", "graph.html")
 
 
+def get_user_ess_dir(user_id: str | None) -> str:
+    """Per-user ESS root: ``{SESSION_STORAGE_DIR}/{user_id}/ess``."""
+    segment = sanitize_user_path_segment(user_id)
+    if not segment:
+        segment = "default"
+    return os.path.join(SESSION_STORAGE_DIR, segment, "ess")
+
+
+def ensure_user_ess_dir(user_id: str | None) -> str:
+    """Create ``{user}/ess``, ``raw/``, ``out/``, ``out/converted/`` and return ESS root."""
+    segment = sanitize_user_path_segment(user_id)
+    if not segment:
+        raise ValueError(
+            "Invalid user_id for ess path; expected a plain user id, "
+            "not a signed session cookie"
+        )
+    ess_dir = os.path.join(SESSION_STORAGE_DIR, segment, "ess")
+    for name in (
+        "",
+        "raw",
+        "out",
+        os.path.join("out", "converted"),
+        os.path.join("out", "converted", ".pdf_pages"),
+    ):
+        os.makedirs(os.path.join(ess_dir, name) if name else ess_dir, exist_ok=True)
+    logger.debug("user ess dir ready: %s", ess_dir)
+    return ess_dir
+
+
+def ess_converted_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/out/converted``."""
+    return os.path.join(ess_out_dir(user_id), "converted")
+
+
+def ess_raw_dir(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "raw")
+
+
+def ess_out_dir(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "out")
+
+
+def _ess_raw_dest_path(raw_dir: str, filename: str) -> str:
+    """Safe destination under ``raw_dir`` (basename only)."""
+    safe = os.path.basename((filename or "").strip()) or "upload.bin"
+    # Avoid path traversal / empty names after basename.
+    safe = safe.replace("\x00", "_") or "upload.bin"
+    return os.path.join(raw_dir, safe)
+
+
+def save_ess_raw_upload(
+    filename: str,
+    data: bytes,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    """Write a single uploaded file into ``{user}/ess/raw`` (overwrite same name)."""
+    if data is None or len(data) == 0:
+        raise ValueError("저장할 파일이 없습니다.")
+
+    ess = ensure_user_ess_dir(user_id)
+    raw = os.path.join(ess, "raw")
+    os.makedirs(raw, exist_ok=True)
+    dest = _ess_raw_dest_path(raw, filename)
+    overwritten = os.path.isfile(dest)
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    logger.info(
+        "ess raw upload user=%s → %s (%s bytes%s)",
+        sanitize_user_path_segment(user_id) or "default",
+        dest,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "raw_dir": raw,
+        "saved": {
+            "name": os.path.basename(dest),
+            "path": dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+        },
+        "count": 1,
+    }
+
+
+def list_ess_raw_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """List files currently under the user's ``ess/raw``."""
+    raw = ess_raw_dir(user_id)
+    if not os.path.isdir(raw):
+        return []
+    out: list[dict[str, object]] = []
+    try:
+        names = sorted(os.listdir(raw))
+    except OSError:
+        return []
+    for name in names:
+        path = os.path.join(raw, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        out.append({"name": name, "path": path, "bytes": size, "mtime": mtime})
+    return out
+
+
+def is_ess_foundation_model_parser_enabled(user_id: str | None) -> bool:
+    """True when ESS Foundation Model Parser is on (default True)."""
+    return bool(
+        load_user_settings(user_id).get(
+            "ess_foundation_model_parser_enabled", True
+        )
+    )
+
+
+def set_ess_foundation_model_parser_enabled(
+    enabled: bool, *, user_id: str | None = None
+) -> bool:
+    settings = save_user_settings(
+        user_id, ess_foundation_model_parser_enabled=bool(enabled)
+    )
+    return bool(settings.get("ess_foundation_model_parser_enabled", True))
+
+
 GRAPH_PATTERNS = ("pattern1", "pattern2", "pattern3")
 DEFAULT_GRAPH_PATTERN = "pattern1"
 
 _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "knowledge_graph_enabled": True,
     "graph_pattern": DEFAULT_GRAPH_PATTERN,
+    # ESS Configure: Foundation Model Parser (default On).
+    "ess_foundation_model_parser_enabled": True,
 }
 
 
@@ -206,6 +337,10 @@ def load_user_settings(user_id: str | None) -> dict[str, object]:
                 settings["knowledge_graph_enabled"] = bool(raw["knowledge_graph_enabled"])
             if "graph_pattern" in raw:
                 settings["graph_pattern"] = normalize_graph_pattern(raw.get("graph_pattern"))
+            if "ess_foundation_model_parser_enabled" in raw:
+                settings["ess_foundation_model_parser_enabled"] = bool(
+                    raw["ess_foundation_model_parser_enabled"]
+                )
             if "skills" in raw:
                 settings["skills"] = _normalize_string_list(raw.get("skills"))
             if "mcp_servers" in raw:
@@ -231,6 +366,8 @@ def save_user_settings(user_id: str | None, **updates: object) -> dict[str, obje
             settings[key] = bool(value)
         elif key == "graph_pattern":
             settings[key] = normalize_graph_pattern(value)
+        elif key == "ess_foundation_model_parser_enabled":
+            settings[key] = bool(value)
         elif key == "skills":
             settings[key] = _normalize_string_list(value)
         elif key == "mcp_servers":

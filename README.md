@@ -1,10 +1,10 @@
-# Agent Skills
+# ESS Project
 
-Agent는 MCP뿐 아니라 [Skill](https://github.com/anthropics/skills)을 활용하여 다양한 기능을 편리하게 구현할 수 있습니다. 여기에서는 [LangGraph](https://www.langchain.com/langgraph)에서 Agent Skill을 활용하는 방법을 설명합니다.
+Agent는 MCP뿐 아니라 [Skill](https://github.com/anthropics/skills)을 활용하여 다양한 기능을 편리하게 구현할 수 있습니다. 여기에서는 [LangGraph](https://www.langchain.com/langgraph)에서 Agent Skill을 활용하는 
 
 ## 개요
 
-Web UI는 **FastAPI + React**이며, Agent는 **같은 프로세스**의 LangGraph로 실행합니다. (`agentic-work`는 UI와 AgentCore Runtime을 분리하지만, 이 저장소는 UI·Agent를 `application/`에 함께 두어 로컬 테스트에 최적화되어 있습니다.)
+Web UI는 **FastAPI + React**이며, Agent는 **같은 프로세스**의 LangGraph로 실행합니다. 
 
 | 구분 | 경로 | 역할 |
 |------|------|------|

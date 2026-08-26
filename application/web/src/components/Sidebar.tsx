@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
 import { formatBrandTitle } from "../formatBrandTitle";
 import { useTheme } from "../hooks/useTheme";
 import type { Theme } from "../theme";
 import type { AppConfig, Task } from "../types";
 import { ConfigDrawer } from "./ConfigDrawer";
+import { EssConfigureModal } from "./EssConfigureModal";
 import { KnowledgeGraphModal } from "./KnowledgeGraphModal";
+import { SyncProgressModal } from "./SyncProgressModal";
 import { TaskListItem } from "./TaskListItem";
 import {
   AppearanceIcon,
   ChevronIcon,
   DashboardIcon,
+  EssIcon,
   GuardrailIcon,
   KnowledgeGraphIcon,
   LogoutIcon,
@@ -22,9 +26,10 @@ import {
   CloseIcon,
 } from "./SidebarIcons";
 
-type DrawerKind = "skill" | "mcp" | "model" | "appearance" | null;
+type DrawerKind = "skill" | "mcp" | "model" | "appearance" | "ess" | null;
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
+const ESS_OPTIONS = ["Sync", "Configure"] as const;
 
 function themeToLabel(theme: Theme): string {
   return theme === "light" ? "Light" : "Dark";
@@ -77,9 +82,22 @@ export function Sidebar({
   const mcpBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const appearanceBtnRef = useRef<HTMLButtonElement>(null);
+  const essBtnRef = useRef<HTMLButtonElement>(null);
   const settingsSectionRef = useRef<HTMLDivElement>(null);
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [essConfigureOpen, setEssConfigureOpen] = useState(false);
+  const [essSyncBusy, setEssSyncBusy] = useState(false);
+  const [essSyncMessage, setEssSyncMessage] = useState<string | null>(null);
+  const [essSyncProgress, setEssSyncProgress] = useState<{
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    page?: number | null;
+    page_n?: number | null;
+    pct?: number | null;
+  } | null>(null);
+  const [essSyncPopupOpen, setEssSyncPopupOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const skills = activeTask?.skills ?? config?.default_skills ?? [];
   const mcpServers = activeTask?.mcp_servers ?? config?.default_mcp_servers ?? [];
@@ -120,13 +138,102 @@ export function Sidebar({
       if (!(target instanceof Element)) return;
       if (settingsSectionRef.current?.contains(target)) return;
       if (target.closest(".config-popover")) return;
-      if (target.closest(".modal-overlay, .knowledge-graph-modal")) return;
+      if (
+        target.closest(
+          ".modal-overlay, .knowledge-graph-modal, .ess-configure-modal, .sync-progress-modal",
+        )
+      )
+        return;
       collapseSettings();
     }
 
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [settingsExpanded, onCloseDrawer]);
+
+  async function handleEssAction(choice: string) {
+    if (choice === "Configure") {
+      setEssConfigureOpen(true);
+      handleSettingApplied();
+      return;
+    }
+    if (choice !== "Sync") return;
+    setEssSyncPopupOpen(true);
+    setEssSyncBusy(true);
+    setEssSyncMessage("ESS 동기화를 시작합니다…");
+    try {
+      const result = await api.syncEss(false);
+      const status = result.status;
+      if (status === "error") {
+        setEssSyncBusy(false);
+        setEssSyncMessage(result.error || "ESS 동기화에 실패했습니다.");
+      } else if (status === "unchanged") {
+        setEssSyncBusy(false);
+        setEssSyncMessage(
+          result.message || "No files changed since last run. Nothing to update.",
+        );
+      } else {
+        setEssSyncBusy(true);
+        setEssSyncMessage(
+          result.message || "ESS 동기화를 백그라운드에서 실행 중입니다.",
+        );
+      }
+    } catch (err) {
+      setEssSyncBusy(false);
+      setEssSyncMessage(
+        err instanceof Error ? err.message : "ESS 동기화에 실패했습니다.",
+      );
+    } finally {
+      handleSettingApplied();
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function pollEssSync() {
+      try {
+        const next = await api.getEssStatus();
+        if (cancelled) return;
+        const busy = next.status === "queued" || next.status === "running";
+        setEssSyncBusy(busy);
+        if (next.progress) {
+          setEssSyncProgress(next.progress);
+        }
+        if (busy) {
+          setEssSyncMessage(
+            next.message || "ESS 동기화를 백그라운드에서 실행 중입니다.",
+          );
+          timer = setTimeout(pollEssSync, 1500);
+          return;
+        }
+        if (next.status === "ready") {
+          setEssSyncMessage(next.message || "ESS 동기화가 완료되었습니다.");
+        } else if (next.status === "unchanged") {
+          setEssSyncMessage(
+            next.message || "No files changed since last run. Nothing to update.",
+          );
+        } else if (next.status === "error") {
+          setEssSyncMessage(next.error || "ESS 동기화에 실패했습니다.");
+        }
+      } catch {
+        if (cancelled) return;
+        if (essSyncBusy) {
+          timer = setTimeout(pollEssSync, 3000);
+        }
+      }
+    }
+
+    if (essSyncBusy || essSyncPopupOpen) {
+      void pollEssSync();
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [essSyncBusy, essSyncPopupOpen]);
 
   function renderTask(task: Task, hidePinBadge = false) {
     return (
@@ -317,6 +424,18 @@ export function Sidebar({
                 <McpIcon className="sidebar-icon" />
                 <span>MCP ({mcpServers.length})</span>
               </button>
+              <button
+                ref={essBtnRef}
+                type="button"
+                className={`sidebar-menu-btn${drawer === "ess" || essSyncBusy ? " is-active" : ""}`}
+                aria-expanded={drawer === "ess"}
+                aria-haspopup="dialog"
+                title={essSyncMessage ?? "ESS"}
+                onClick={() => toggleDrawer("ess")}
+              >
+                <EssIcon className="sidebar-icon" />
+                <span>{essSyncBusy ? "ESS (Syncing…)" : "ESS"}</span>
+              </button>
               <label className="sidebar-menu-btn settings-toggle">
                 <GuardrailIcon className="sidebar-icon" />
                 <span>Guardrail</span>
@@ -403,6 +522,19 @@ export function Sidebar({
           onClose={handleDrawerClose}
         />
       )}
+      {drawer === "ess" && (
+        <ConfigDrawer
+          title="ESS"
+          options={[...ESS_OPTIONS]}
+          selected={[]}
+          mode="single"
+          anchorEl={essBtnRef.current}
+          onChange={(next) => {
+            if (next[0]) void handleEssAction(next[0]);
+          }}
+          onClose={handleDrawerClose}
+        />
+      )}
       {drawer === "model" && config && activeTask && (
         <ConfigDrawer
           title="Model"
@@ -435,6 +567,25 @@ export function Sidebar({
           userId={userId}
           title={brandTitle}
           onClose={() => setKnowledgeGraphOpen(false)}
+        />
+      )}
+
+      {essConfigureOpen && (
+        <EssConfigureModal
+          onClose={() => setEssConfigureOpen(false)}
+          onFileUploaded={() => {
+            void handleEssAction("Sync");
+          }}
+        />
+      )}
+
+      {essSyncPopupOpen && (
+        <SyncProgressModal
+          title="ESS Sync"
+          busy={essSyncBusy}
+          message={essSyncMessage}
+          progress={essSyncProgress}
+          onClose={() => setEssSyncPopupOpen(false)}
         />
       )}
     </>

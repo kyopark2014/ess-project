@@ -1,0 +1,5 @@
+# Foundation Model Parser (PDF → page images → Bedrock Markdown)
+Pillow>=10.0.0
+pymupdf>=1.24.0
+pdfplumber>=0.11.0
+pypdf>=4.0.0

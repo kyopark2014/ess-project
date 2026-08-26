@@ -103,6 +103,41 @@ export interface GraphStatus {
   next_eligible_at?: string | null;
 }
 
+export interface EssStatus {
+  ess_dir: string;
+  raw_dir?: string;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  exists?: boolean;
+  status: "idle" | "queued" | "running" | "ready" | "error" | "unchanged" | string;
+  foundation_model_parser_enabled?: boolean;
+  error?: string | null;
+  message?: string | null;
+  last_success_at?: string | null;
+  progress?: {
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    page?: number | null;
+    page_n?: number | null;
+    pct?: number | null;
+  } | null;
+}
+
+export interface EssConfig {
+  ess_dir: string;
+  raw_dir?: string;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  foundation_model_parser_enabled?: boolean;
+}
+
+export interface EssRawUploadResult {
+  ess_dir: string;
+  raw_dir: string;
+  saved: { name: string; path: string; bytes: number; overwritten?: boolean };
+  count: number;
+  files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+}
+
 export type GraphPattern = "pattern1" | "pattern2" | "pattern3";
 
 export interface SessionInfo {
@@ -142,6 +177,44 @@ export const api = {
   getGraphStatus: () => request<GraphStatus>("/api/graph/status"),
   rebuildGraph: (force = false) =>
     request<GraphStatus>(`/api/graph/rebuild${force ? "?force=1" : ""}`, {
+      method: "POST",
+    }),
+  getEssStatus: () => request<EssStatus>("/api/ess/status"),
+  getEssConfig: () => request<EssConfig>("/api/ess/config"),
+  putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
+    request<EssConfig>("/api/ess/config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  uploadEssRawFile: async (file: File): Promise<EssRawUploadResult> => {
+    const form = new FormData();
+    form.append("file", file);
+    uiLog("ess:upload start", { name: file.name, size: file.size });
+    const res = await fetch("/api/ess/raw", {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      uiError("ess:upload failed", { status: res.status, body: text });
+      let message = text || res.statusText;
+      try {
+        const parsed = JSON.parse(text) as { detail?: string };
+        if (typeof parsed.detail === "string" && parsed.detail) {
+          message = parsed.detail;
+        }
+      } catch {
+        // keep raw text
+      }
+      throw new Error(message);
+    }
+    const data = (await res.json()) as EssRawUploadResult;
+    uiLog("ess:upload ok", { name: data.saved?.name });
+    return data;
+  },
+  syncEss: (full = false) =>
+    request<EssStatus>(`/api/ess/sync${full ? "?full=1" : ""}`, {
       method: "POST",
     }),
   getConfig: () => request<AppConfig>("/api/config"),
