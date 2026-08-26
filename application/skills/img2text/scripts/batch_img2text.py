@@ -22,14 +22,22 @@ import mcp_server_text_extraction as tex  # noqa: E402
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
 
 LLM_PROMPT = (
-    "페이지 내용을 Markdown 형식으로 변환합니다. 평문이 아니라 제목(#·##)·목록·강조·코드 블록 등 "
-    "Markdown 문법을 적절히 써서 구조화해 주세요. 문장 단위로 읽기 쉽게 구분합니다. "
-    "상단의 header와 하단의 footer는 출력에서 제외합니다. 상단 header는 주로 현재 페이지 제목이고, "
-    "footer에는 페이지 번호 등이 있는데, 변환 결과에는 포함하지 않습니다.\n\n"
-    "중요: 원문의 언어를 그대로 유지합니다. 영어 페이지는 영어로, 한국어 페이지는 한국어로 추출하고, "
-    "번역·의역·언어 전환·다른 언어로의 요약을 하지 않습니다. 그림·도표 설명도 본문과 같은 언어로 작성합니다.\n\n"
-    "페이지에 그림·도표·사진·스크린샷·다이어그램·캡처 등 시각적 요소가 있으면, 그 이미지가 무엇을 보여주는지·"
-    "본문과 어떤 관계인지·어떤 정보를 전달하는지를 빠짐없이 상세히 풀어서 서술합니다."
+    "LANGUAGE (mandatory, highest priority):\n"
+    "- Detect the primary language of the readable text on the page.\n"
+    "- Write the ENTIRE Markdown output in that same language only "
+    "(body, headings, lists, captions, figure/table/diagram descriptions, "
+    "layout notes, and empty-page remarks).\n"
+    "- If the page text is English, the whole output MUST be English. "
+    "Do NOT translate into Korean. Do NOT use Korean labels such as "
+    "'시각적 요소 설명', '표지', or Korean empty-page messages.\n"
+    "- If the page text is Korean, keep the whole output in Korean.\n"
+    "- Never mix languages. Never paraphrase into another language.\n\n"
+    "Convert the page to Markdown with headings (#/##), lists, emphasis, and "
+    "code blocks as appropriate. Exclude top-of-page headers and bottom footers "
+    "(e.g. running titles, page numbers).\n\n"
+    "If the page has figures, tables, photos, screenshots, or diagrams, describe "
+    "what they show and how they relate to the body — in the same language as the "
+    "page text."
 )
 
 
