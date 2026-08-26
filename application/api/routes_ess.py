@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from application.api.routes_auth import require_user_id
 from application.ess_jobs import ensure_ess_sync, get_ess_job_status
@@ -13,11 +13,62 @@ from application import utils
 
 router = APIRouter(prefix="/api/ess", tags=["ess"])
 
-_MAX_RAW_UPLOAD_BYTES = 80 * 1024 * 1024  # 80 MiB
+# Multipart fallback only (prefer presigned PUT for large PDFs).
+_MAX_MULTIPART_DOC_BYTES = 80 * 1024 * 1024  # 80 MiB
 
 
 class EssConfigPut(BaseModel):
     foundation_model_parser_enabled: bool | None = None
+
+
+class EssDocsPresignRequest(BaseModel):
+    file_name: str = Field(..., min_length=1)
+    size: int | None = Field(default=None, ge=0)
+    content_type: str | None = None
+
+
+class EssDocsCompleteRequest(BaseModel):
+    file_name: str = Field(..., min_length=1)
+    s3_key: str = Field(..., min_length=1)
+    size: int | None = Field(default=None, ge=0)
+    original_filename: str | None = None
+
+
+def _load_doc_list_payload(user_id: str) -> dict:
+    try:
+        utils._ensure_ess_on_path()
+        from doc_list import load_doc_list, list_documents
+
+        ess = utils.get_user_ess_dir(user_id)
+        data = load_doc_list(ess)
+        return {
+            "doc_list": str(Path(ess) / "doc_list.json"),
+            "documents": list_documents(ess),
+            "doc_count": len(data.get("documents") or []),
+            "doc_list_updated_at": data.get("updated_at"),
+        }
+    except Exception:
+        return {
+            "doc_list": utils.ess_doc_list_path(user_id),
+            "documents": [],
+            "doc_count": 0,
+            "doc_list_updated_at": None,
+        }
+
+
+def _assert_ess_doc_size(size: int | None) -> None:
+    if size is None:
+        return
+    if size <= 0:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
+    if size > utils.MAX_ESS_DOC_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"파일이 너무 큽니다 "
+                f"(최대 {utils.MAX_ESS_DOC_BYTES // (1024 * 1024)}MB)."
+            ),
+        )
 
 
 @router.get("/status")
@@ -25,15 +76,18 @@ def ess_status(request: Request) -> dict:
     user_id = require_user_id(request)
     # Do not call ensure_* here — status is polled every ~2.5s during Sync.
     job = get_ess_job_status(user_id)
-    files = utils.list_ess_raw_files(user_id)
+    files = utils.list_ess_doc_files(user_id)
+    docs = Path(utils.ess_docs_dir(user_id))
     converted = Path(utils.ess_converted_dir(user_id))
-    md_files = sorted(converted.glob("*.md")) if converted.is_dir() else []
+    # Extraction outputs live next to sources in docs/ (``{stem}.md``).
+    md_files = sorted(docs.glob("*.md")) if docs.is_dir() else []
     status = job.get("status") or "idle"
     if status in ("idle", "unchanged") and files:
         status = "ready" if status == "idle" else status
     return {
         "ess_dir": utils.get_user_ess_dir(user_id),
-        "raw_dir": utils.ess_raw_dir(user_id),
+        "docs_dir": utils.ess_docs_dir(user_id),
+        "raw_dir": utils.ess_docs_dir(user_id),  # backward-compatible
         "converted_dir": str(converted),
         "markdown_files": [p.name for p in md_files],
         "markdown_count": len(md_files),
@@ -47,6 +101,7 @@ def ess_status(request: Request) -> dict:
         "message": job.get("message"),
         "last_success_at": job.get("last_success_at"),
         "progress": job.get("progress"),
+        **_load_doc_list_payload(user_id),
     }
 
 
@@ -56,11 +111,13 @@ def get_ess_config(request: Request) -> dict:
     utils.ensure_user_ess_dir(user_id)
     return {
         "ess_dir": utils.get_user_ess_dir(user_id),
-        "raw_dir": utils.ess_raw_dir(user_id),
-        "files": utils.list_ess_raw_files(user_id),
+        "docs_dir": utils.ess_docs_dir(user_id),
+        "raw_dir": utils.ess_docs_dir(user_id),
+        "files": utils.list_ess_doc_files(user_id),
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
             user_id
         ),
+        **_load_doc_list_payload(user_id),
     }
 
 
@@ -75,20 +132,120 @@ def put_ess_config(body: EssConfigPut, request: Request) -> dict:
         )
     return {
         "ess_dir": utils.get_user_ess_dir(user_id),
-        "raw_dir": utils.ess_raw_dir(user_id),
-        "files": utils.list_ess_raw_files(user_id),
+        "docs_dir": utils.ess_docs_dir(user_id),
+        "raw_dir": utils.ess_docs_dir(user_id),
+        "files": utils.list_ess_doc_files(user_id),
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
             user_id
         ),
+        **_load_doc_list_payload(user_id),
     }
 
 
-@router.post("/raw")
-async def upload_ess_raw_file(
-    request: Request,
-    file: UploadFile = File(...),
-) -> dict:
-    """Copy one uploaded document into the user's ``{ess}/raw`` for Sync."""
+@router.get("/doc-list")
+def get_ess_doc_list(request: Request) -> dict:
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    return {
+        "ess_dir": utils.get_user_ess_dir(user_id),
+        "docs_dir": utils.ess_docs_dir(user_id),
+        **_load_doc_list_payload(user_id),
+    }
+
+
+@router.post("/docs/presign")
+def ess_docs_presign(body: EssDocsPresignRequest, request: Request) -> dict:
+    """Return a short-lived S3 PUT URL (browser → S3, bypasses API body limits)."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    _assert_ess_doc_size(body.size)
+
+    try:
+        presign = utils.generate_ess_docs_presigned_put(
+            body.file_name, user_id=user_id
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"업로드 URL 생성 실패: {exc}"
+        ) from exc
+    if not presign or not presign.get("upload_url"):
+        raise HTTPException(status_code=500, detail="업로드 URL 생성 실패")
+
+    return {
+        "ok": True,
+        "file_name": presign["file_name"],
+        "original_filename": presign.get("original_filename") or body.file_name,
+        "sanitized": bool(presign.get("sanitized")),
+        "s3_key": presign["s3_key"],
+        "content_type": presign.get("content_type"),
+        "upload_url": presign["upload_url"],
+        "headers": presign.get("headers") or {},
+        "expires_in": presign.get("expires_in"),
+        "docs_dir": utils.ess_docs_dir(user_id),
+    }
+
+
+@router.post("/docs/complete")
+def ess_docs_complete(body: EssDocsCompleteRequest, request: Request) -> dict:
+    """Confirm a presigned PUT and materialize the object into ``ess/docs/``."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    _assert_ess_doc_size(body.size)
+
+    try:
+        utils._ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(body.file_name)
+    except Exception:
+        safe_name = Path(body.file_name).name
+
+    expected_key = utils.ess_docs_s3_key(safe_name, user_id=user_id)
+    key = (body.s3_key or "").strip()
+    if key != expected_key:
+        raise HTTPException(status_code=400, detail="Invalid upload target")
+
+    head = utils.head_session_upload_object(key)
+    if not head:
+        raise HTTPException(status_code=404, detail="Uploaded object not found")
+    content_length = int(head.get("content_length") or 0)
+    if content_length <= 0:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
+    if body.size is not None and content_length != body.size:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Uploaded size mismatch (expected {body.size}, got {content_length})"
+            ),
+        )
+    _assert_ess_doc_size(content_length)
+
+    result = utils.materialize_ess_docs_from_s3(
+        key,
+        safe_name,
+        user_id=user_id,
+        original_filename=body.original_filename or body.file_name,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=500, detail="Failed to save file to ess/docs"
+        )
+
+    return {
+        "ok": True,
+        "ess_dir": result["ess_dir"],
+        "docs_dir": result.get("docs_dir"),
+        "raw_dir": result.get("docs_dir"),
+        "saved": result["saved"],
+        "count": result.get("count", 1),
+        "s3_key": key,
+        "files": utils.list_ess_doc_files(user_id),
+        **_load_doc_list_payload(user_id),
+    }
+
+
+async def _upload_ess_doc_multipart(request: Request, file: UploadFile) -> dict:
+    """Legacy multipart upload (small files only). Prefer presign flow."""
     user_id = require_user_id(request)
     name = (file.filename or "").strip() or "upload.bin"
     try:
@@ -101,17 +258,19 @@ async def upload_ess_raw_file(
 
     if not data:
         raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
-    if len(data) > _MAX_RAW_UPLOAD_BYTES:
+    if len(data) > _MAX_MULTIPART_DOC_BYTES:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"파일이 너무 큽니다: {name} "
-                f"(최대 {_MAX_RAW_UPLOAD_BYTES // (1024 * 1024)}MB)."
+                f"(최대 {_MAX_MULTIPART_DOC_BYTES // (1024 * 1024)}MB). "
+                "브라우저를 강력 새로고침(Cmd+Shift+R / Ctrl+Shift+R)한 뒤 "
+                "다시 업로드하세요. (presigned S3 업로드로 전환됩니다)"
             ),
         )
 
     try:
-        result = utils.save_ess_raw_upload(name, data, user_id=user_id)
+        result = utils.save_ess_doc_upload(name, data, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -122,27 +281,57 @@ async def upload_ess_raw_file(
 
     return {
         "ess_dir": result["ess_dir"],
-        "raw_dir": result["raw_dir"],
+        "docs_dir": result.get("docs_dir") or result.get("raw_dir"),
+        "raw_dir": result.get("docs_dir") or result.get("raw_dir"),
         "saved": result["saved"],
         "count": result["count"],
-        "files": utils.list_ess_raw_files(user_id),
+        "files": utils.list_ess_doc_files(user_id),
+        **_load_doc_list_payload(user_id),
     }
 
 
+@router.post("/docs")
+async def upload_ess_doc_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict:
+    """Legacy multipart path — the UI uses ``/docs/presign`` + ``/docs/complete``."""
+    return await _upload_ess_doc_multipart(request, file)
+
+
+@router.post("/raw")
+async def upload_ess_raw_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict:
+    """Deprecated alias for ``POST /api/ess/docs``."""
+    return await _upload_ess_doc_multipart(request, file)
+
+
 @router.post("/sync")
-def sync_ess(request: Request, full: bool = Query(False)) -> dict:
-    """Enqueue ESS sync for the user's ess directory."""
+def sync_ess(
+    request: Request,
+    full: bool = Query(False),
+    model: str | None = Query(None),
+) -> dict:
+    """Enqueue ESS sync for the user's ess directory.
+
+    ``model`` is the UI-selected display name (e.g. ``Claude 4.6 Sonnet``)
+    used by Foundation Model Parser vision extraction.
+    """
     user_id = require_user_id(request)
     utils.ensure_user_ess_dir(user_id)
-    job = ensure_ess_sync(user_id, full=full)
-    files = utils.list_ess_raw_files(user_id)
+    job = ensure_ess_sync(user_id, full=full, model=model)
+    files = utils.list_ess_doc_files(user_id)
     return {
         "ess_dir": utils.get_user_ess_dir(user_id),
-        "raw_dir": utils.ess_raw_dir(user_id),
+        "docs_dir": utils.ess_docs_dir(user_id),
+        "raw_dir": utils.ess_docs_dir(user_id),
         "files": files,
         "exists": len(files) > 0,
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
             user_id
         ),
+        **_load_doc_list_payload(user_id),
         **job,
     }

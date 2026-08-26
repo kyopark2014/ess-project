@@ -136,8 +136,16 @@ def get_user_ess_dir(user_id: str | None) -> str:
     return os.path.join(SESSION_STORAGE_DIR, segment, "ess")
 
 
+def _ensure_ess_on_path() -> str:
+    """Put ``ess-project/ess`` on ``sys.path`` so ``doc_list`` is importable."""
+    ess_pkg = os.path.join(os.path.dirname(workingDir), "ess")
+    if ess_pkg not in sys.path:
+        sys.path.insert(0, ess_pkg)
+    return ess_pkg
+
+
 def ensure_user_ess_dir(user_id: str | None) -> str:
-    """Create ``{user}/ess``, ``raw/``, ``out/``, ``out/converted/`` and return ESS root."""
+    """Create ``{user}/ess``, ``docs/``, ``out/``, ``out/converted/`` and return ESS root."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         raise ValueError(
@@ -147,12 +155,34 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
     ess_dir = os.path.join(SESSION_STORAGE_DIR, segment, "ess")
     for name in (
         "",
-        "raw",
+        "docs",
         "out",
         os.path.join("out", "converted"),
         os.path.join("out", "converted", ".pdf_pages"),
     ):
         os.makedirs(os.path.join(ess_dir, name) if name else ess_dir, exist_ok=True)
+    try:
+        _ensure_ess_on_path()
+        from doc_list import (
+            doc_list_path,
+            empty_doc_list,
+            migrate_raw_to_docs,
+            save_doc_list,
+            sync_doc_list_with_filesystem,
+        )
+
+        migrate_raw_to_docs(ess_dir)
+        if not doc_list_path(ess_dir).is_file():
+            docs = os.path.join(ess_dir, "docs")
+            has_files = os.path.isdir(docs) and any(
+                os.path.isfile(os.path.join(docs, n)) for n in os.listdir(docs)
+            )
+            if has_files:
+                sync_doc_list_with_filesystem(ess_dir, user_id=segment)
+            else:
+                save_doc_list(ess_dir, empty_doc_list(user_id=segment))
+    except Exception:
+        logger.debug("ess doc_list ensure skipped", exc_info=True)
     logger.debug("user ess dir ready: %s", ess_dir)
     return ess_dir
 
@@ -162,20 +192,118 @@ def ess_converted_dir(user_id: str | None = None) -> str:
     return os.path.join(ess_out_dir(user_id), "converted")
 
 
+def ess_docs_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/docs`` (legacy: ``raw``)."""
+    ess = get_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    legacy = os.path.join(ess, "raw")
+    if not os.path.isdir(docs) and os.path.isdir(legacy):
+        try:
+            _ensure_ess_on_path()
+            from doc_list import migrate_raw_to_docs
+
+            migrate_raw_to_docs(ess)
+        except Exception:
+            pass
+    return docs
+
+
 def ess_raw_dir(user_id: str | None = None) -> str:
-    return os.path.join(get_user_ess_dir(user_id), "raw")
+    """Deprecated alias for :func:`ess_docs_dir`."""
+    return ess_docs_dir(user_id)
 
 
 def ess_out_dir(user_id: str | None = None) -> str:
     return os.path.join(get_user_ess_dir(user_id), "out")
 
 
-def _ess_raw_dest_path(raw_dir: str, filename: str) -> str:
-    """Safe destination under ``raw_dir`` (basename only)."""
-    safe = os.path.basename((filename or "").strip()) or "upload.bin"
-    # Avoid path traversal / empty names after basename.
-    safe = safe.replace("\x00", "_") or "upload.bin"
-    return os.path.join(raw_dir, safe)
+def ess_doc_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "doc_list.json")
+
+
+def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
+    """Return ``(dest_path, sanitized_name, original_basename)``.
+
+    Sanitizes at upload time (spaces → ``_``, unsafe chars stripped).
+    """
+    original = os.path.basename((filename or "").strip()) or "upload.bin"
+    original = original.replace("\x00", "_") or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe = sanitize_ess_filename(original)
+    except Exception:
+        safe = original.replace(" ", "_")
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in safe)
+        while "__" in safe:
+            safe = safe.replace("__", "_")
+        stem, ext = os.path.splitext(safe)
+        safe = f"{stem.strip('._-') or 'document'}{ext.lower()}"
+    return os.path.join(docs_dir, safe), safe, original
+
+
+def save_ess_doc_upload(
+    filename: str,
+    data: bytes,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    """Sanitize filename, write into ``{user}/ess/docs``, update doc_list."""
+    if data is None or len(data) == 0:
+        raise ValueError("저장할 파일이 없습니다.")
+
+    ess = ensure_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    os.makedirs(docs, exist_ok=True)
+    dest, safe_name, original_name = _ess_docs_dest_path(docs, filename)
+    overwritten = os.path.isfile(dest)
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    segment = sanitize_user_path_segment(user_id) or "default"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import upsert_document
+
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="uploaded",
+            user_id=segment,
+            extra={
+                "original_filename": original_name,
+                "sanitized": original_name != safe_name,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to update ess doc_list after upload")
+
+    logger.info(
+        "ess docs upload user=%s → %s (original=%s, %s bytes%s)",
+        segment,
+        dest,
+        original_name,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "docs_dir": docs,
+        "raw_dir": docs,  # backward-compatible key
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+        },
+        "count": 1,
+        "doc_list": ess_doc_list_path(user_id),
+    }
 
 
 def save_ess_raw_upload(
@@ -184,50 +312,22 @@ def save_ess_raw_upload(
     *,
     user_id: str | None = None,
 ) -> dict[str, object]:
-    """Write a single uploaded file into ``{user}/ess/raw`` (overwrite same name)."""
-    if data is None or len(data) == 0:
-        raise ValueError("저장할 파일이 없습니다.")
-
-    ess = ensure_user_ess_dir(user_id)
-    raw = os.path.join(ess, "raw")
-    os.makedirs(raw, exist_ok=True)
-    dest = _ess_raw_dest_path(raw, filename)
-    overwritten = os.path.isfile(dest)
-    with open(dest, "wb") as f:
-        f.write(data)
-
-    logger.info(
-        "ess raw upload user=%s → %s (%s bytes%s)",
-        sanitize_user_path_segment(user_id) or "default",
-        dest,
-        len(data),
-        ", overwrite" if overwritten else "",
-    )
-    return {
-        "ess_dir": ess,
-        "raw_dir": raw,
-        "saved": {
-            "name": os.path.basename(dest),
-            "path": dest,
-            "bytes": len(data),
-            "overwritten": overwritten,
-        },
-        "count": 1,
-    }
+    """Deprecated alias for :func:`save_ess_doc_upload`."""
+    return save_ess_doc_upload(filename, data, user_id=user_id)
 
 
-def list_ess_raw_files(user_id: str | None = None) -> list[dict[str, object]]:
-    """List files currently under the user's ``ess/raw``."""
-    raw = ess_raw_dir(user_id)
-    if not os.path.isdir(raw):
+def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """List files currently under the user's ``ess/docs``."""
+    docs = ess_docs_dir(user_id)
+    if not os.path.isdir(docs):
         return []
     out: list[dict[str, object]] = []
     try:
-        names = sorted(os.listdir(raw))
+        names = sorted(os.listdir(docs))
     except OSError:
         return []
     for name in names:
-        path = os.path.join(raw, name)
+        path = os.path.join(docs, name)
         if not os.path.isfile(path):
             continue
         try:
@@ -237,6 +337,11 @@ def list_ess_raw_files(user_id: str | None = None) -> list[dict[str, object]]:
             continue
         out.append({"name": name, "path": path, "bytes": size, "mtime": mtime})
     return out
+
+
+def list_ess_raw_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """Deprecated alias for :func:`list_ess_doc_files`."""
+    return list_ess_doc_files(user_id)
 
 
 def is_ess_foundation_model_parser_enabled(user_id: str | None) -> bool:
@@ -1471,6 +1576,169 @@ def materialize_session_upload_from_s3(
     except Exception:
         logger.error(
             "Error materializing session upload key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# ESS docs uploads (browser → S3 presigned PUT → materialize into ess/docs/)
+# ---------------------------------------------------------------------------
+
+ESS_DOCS_S3_PREFIX = "session-uploads"
+MAX_ESS_DOC_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
+def ess_docs_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """Build ``session-uploads/{user}/ess/{file}`` staging key."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    return f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/{safe_name}"
+
+
+def generate_ess_docs_presigned_put(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    expires_in: int = 900,
+) -> dict | None:
+    """Return a browser-usable presigned PUT URL for ESS docs uploads."""
+    if not s3_bucket:
+        logger.error("s3_bucket is not configured")
+        return None
+
+    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(original)
+    except Exception:
+        safe_name = original.replace(" ", "_")
+
+    s3_key = ess_docs_s3_key(safe_name, user_id=user_id)
+    content_type = _session_upload_content_type(safe_name)
+    headers = {"Content-Type": content_type}
+    params: dict = {
+        "Bucket": s3_bucket,
+        "Key": s3_key,
+        "ContentType": content_type,
+    }
+    if content_type == "application/pdf":
+        params["ContentDisposition"] = "inline"
+        headers["Content-Disposition"] = "inline"
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params=params,
+            ExpiresIn=max(60, int(expires_in)),
+            HttpMethod="PUT",
+        )
+        return {
+            "file_name": safe_name,
+            "original_filename": original,
+            "sanitized": original != safe_name,
+            "s3_key": s3_key,
+            "content_type": content_type,
+            "upload_url": upload_url,
+            "headers": headers,
+            "expires_in": max(60, int(expires_in)),
+        }
+    except Exception:
+        logger.error(
+            "Error generating ESS docs presign: %s", traceback.format_exc()
+        )
+        return None
+
+
+def materialize_ess_docs_from_s3(
+    s3_key: str,
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    original_filename: str | None = None,
+) -> dict | None:
+    """Download a staged ESS object into ``{user}/ess/docs/`` and update doc_list."""
+    if not s3_bucket or not s3_key:
+        return None
+
+    original = (
+        os.path.basename(original_filename or file_name or "").strip()
+        or "upload.bin"
+    )
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename, upsert_document
+
+        safe_name = sanitize_ess_filename(file_name or original)
+    except Exception:
+        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        upsert_document = None  # type: ignore[assignment]
+
+    ess = ensure_user_ess_dir(user_id)
+    docs = os.path.join(ess, "docs")
+    os.makedirs(docs, exist_ok=True)
+    dest_path = os.path.join(docs, safe_name)
+    overwritten = os.path.isfile(dest_path)
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.download_file(s3_bucket, s3_key, dest_path)
+        size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+        if size <= 0:
+            logger.error("ESS materialize produced empty file: %s", dest_path)
+            return None
+
+        segment = sanitize_user_path_segment(user_id) or "default"
+        if upsert_document is not None:
+            try:
+                upsert_document(
+                    ess,
+                    filename=safe_name,
+                    source_path=os.path.abspath(dest_path),
+                    bytes_size=size,
+                    status="uploaded",
+                    user_id=segment,
+                    extra={
+                        "original_filename": original,
+                        "sanitized": original != safe_name,
+                        "s3_key": s3_key,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to update ess doc_list after materialize")
+
+        logger.info(
+            "ess docs materialized user=%s s3_key=%s path=%s bytes=%s",
+            segment,
+            s3_key,
+            dest_path,
+            size,
+        )
+        return {
+            "ess_dir": ess,
+            "docs_dir": docs,
+            "raw_dir": docs,
+            "saved": {
+                "name": safe_name,
+                "original_filename": original,
+                "sanitized": original != safe_name,
+                "path": dest_path,
+                "bytes": size,
+                "overwritten": overwritten,
+            },
+            "count": 1,
+            "s3_key": s3_key,
+            "doc_list": ess_doc_list_path(user_id),
+            "content_type": _session_upload_content_type(safe_name),
+            "content_length": size,
+        }
+    except Exception:
+        logger.error(
+            "Error materializing ESS docs key=%s: %s",
             s3_key,
             traceback.format_exc(),
         )

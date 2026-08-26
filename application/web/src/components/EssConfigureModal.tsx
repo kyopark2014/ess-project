@@ -159,8 +159,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
                 </ul>
               ) : (
                 <p className="ess-configure-docs-empty">
-                  파일을 하나 선택하면 ess/raw로 저장되고 Sync 화면이
-                  열립니다.
+                  파일을 선택하면 저장 후 Sync를 수행합니다.
                 </p>
               )}
             </div>

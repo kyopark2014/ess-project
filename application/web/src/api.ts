@@ -105,8 +105,12 @@ export interface GraphStatus {
 
 export interface EssStatus {
   ess_dir: string;
+  docs_dir?: string;
   raw_dir?: string;
   files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
+  doc_list?: string;
   exists?: boolean;
   status: "idle" | "queued" | "running" | "ready" | "error" | "unchanged" | string;
   foundation_model_parser_enabled?: boolean;
@@ -125,17 +129,44 @@ export interface EssStatus {
 
 export interface EssConfig {
   ess_dir: string;
+  docs_dir?: string;
   raw_dir?: string;
   files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
   foundation_model_parser_enabled?: boolean;
+}
+
+export interface EssDocsPresignResult {
+  ok?: boolean;
+  file_name: string;
+  original_filename?: string;
+  sanitized?: boolean;
+  s3_key: string;
+  content_type?: string;
+  upload_url: string;
+  headers?: Record<string, string>;
+  expires_in?: number;
+  docs_dir?: string;
 }
 
 export interface EssRawUploadResult {
   ess_dir: string;
+  docs_dir?: string;
   raw_dir: string;
-  saved: { name: string; path: string; bytes: number; overwritten?: boolean };
+  saved: {
+    name: string;
+    original_filename?: string;
+    sanitized?: boolean;
+    path: string;
+    bytes: number;
+    overwritten?: boolean;
+  };
   count: number;
   files?: Array<{ name: string; path: string; bytes: number; mtime?: number }>;
+  documents?: Array<Record<string, unknown>>;
+  doc_count?: number;
+  s3_key?: string;
 }
 
 export type GraphPattern = "pattern1" | "pattern2" | "pattern3";
@@ -187,36 +218,91 @@ export const api = {
       body: JSON.stringify(body),
     }),
   uploadEssRawFile: async (file: File): Promise<EssRawUploadResult> => {
-    const form = new FormData();
-    form.append("file", file);
+    // Presigned PUT: browser → S3 directly (avoids ECS/ALB ~80MB body limits).
     uiLog("ess:upload start", { name: file.name, size: file.size });
-    const res = await fetch("/api/ess/raw", {
+
+    const presign = await request<EssDocsPresignResult>("/api/ess/docs/presign", {
       method: "POST",
-      credentials: "include",
-      body: form,
+      body: JSON.stringify({
+        file_name: file.name,
+        size: file.size,
+        content_type: file.type || undefined,
+      }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      uiError("ess:upload failed", { status: res.status, body: text });
-      let message = text || res.statusText;
-      try {
-        const parsed = JSON.parse(text) as { detail?: string };
-        if (typeof parsed.detail === "string" && parsed.detail) {
-          message = parsed.detail;
-        }
-      } catch {
-        // keep raw text
-      }
-      throw new Error(message);
+    if (!presign.upload_url || !presign.s3_key) {
+      throw new Error("Presign succeeded but no upload URL was returned");
     }
-    const data = (await res.json()) as EssRawUploadResult;
-    uiLog("ess:upload ok", { name: data.saved?.name });
+
+    uiLog("ess:upload put start", {
+      name: presign.file_name,
+      s3_key: presign.s3_key,
+      size: file.size,
+      host: (() => {
+        try {
+          return new URL(presign.upload_url).host;
+        } catch {
+          return "";
+        }
+      })(),
+    });
+
+    const putHeaders = new Headers(presign.headers || {});
+    if (!putHeaders.has("Content-Type")) {
+      putHeaders.set(
+        "Content-Type",
+        presign.content_type || "application/octet-stream",
+      );
+    }
+    let putRes: Response;
+    try {
+      putRes = await fetch(presign.upload_url, {
+        method: "PUT",
+        body: file,
+        headers: putHeaders,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      uiError("ess:upload put network error", { detail });
+      throw new Error(`S3 직접 업로드 네트워크 오류: ${detail}`);
+    }
+    if (!putRes.ok) {
+      const text = await putRes.text();
+      uiError("ess:upload put failed", { status: putRes.status, body: text });
+      const codeMatch = text.match(/<Code>([^<]+)<\/Code>/i);
+      const msgMatch = text.match(/<Message>([^<]+)<\/Message>/i);
+      const s3Detail =
+        codeMatch || msgMatch
+          ? [codeMatch?.[1], msgMatch?.[1]].filter(Boolean).join(": ")
+          : "";
+      throw new Error(
+        s3Detail ||
+          text.slice(0, 200) ||
+          putRes.statusText ||
+          `Direct S3 upload failed (HTTP ${putRes.status})`,
+      );
+    }
+
+    const data = await request<EssRawUploadResult>("/api/ess/docs/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: presign.file_name,
+        s3_key: presign.s3_key,
+        size: file.size,
+        original_filename: presign.original_filename || file.name,
+      }),
+    });
+    uiLog("ess:upload ok", { name: data.saved?.name, s3_key: data.s3_key });
     return data;
   },
-  syncEss: (full = false) =>
-    request<EssStatus>(`/api/ess/sync${full ? "?full=1" : ""}`, {
+  syncEss: (full = false, model?: string) => {
+    const params = new URLSearchParams();
+    if (full) params.set("full", "1");
+    if (model?.trim()) params.set("model", model.trim());
+    const qs = params.toString();
+    return request<EssStatus>(`/api/ess/sync${qs ? `?${qs}` : ""}`, {
       method: "POST",
-    }),
+    });
+  },
   getConfig: () => request<AppConfig>("/api/config"),
   getAdminDashboard: () => request<DashboardStats>("/api/admin/dashboard"),
   listTasks: () => request<{ tasks: Task[] }>("/api/tasks"),

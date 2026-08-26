@@ -188,8 +188,14 @@ def get_ess_job_status(user_id: str) -> dict[str, Any]:
         return state.to_dict()
 
 
-def ensure_ess_sync(user_id: str, *, full: bool = False) -> dict[str, Any]:
+def ensure_ess_sync(
+    user_id: str,
+    *,
+    full: bool = False,
+    model: str | None = None,
+) -> dict[str, Any]:
     """Enqueue a background ESS sync for ``user_id`` unless already running."""
+    model_name = (model or "").strip() or None
     with _lock:
         state = _get_or_create(user_id)
         if user_id in _running_users or state.status in ("queued", "running"):
@@ -207,6 +213,8 @@ def ensure_ess_sync(user_id: str, *, full: bool = False) -> dict[str, Any]:
         state.status = "queued"
         state.error = None
         state.message = "ESS 동기화를 백그라운드에서 시작합니다."
+        if model_name:
+            state.message = f"ESS 동기화를 백그라운드에서 시작합니다. (model: {model_name})"
         state.started_at = _now()
         state.finished_at = None
         state.updated_at = state.started_at
@@ -216,7 +224,7 @@ def ensure_ess_sync(user_id: str, *, full: bool = False) -> dict[str, Any]:
 
     thread = threading.Thread(
         target=_run_sync,
-        args=(user_id, full),
+        args=(user_id, full, model_name),
         name=f"ess-sync-{user_id}",
         daemon=True,
     )
@@ -323,18 +331,22 @@ def _sync_error_tail(stdout: str, returncode: int) -> str:
     return stdout[-500:]
 
 
-def _run_sync(user_id: str, full: bool) -> None:
+def _run_sync(user_id: str, full: bool, model: str | None = None) -> None:
+    model_name = (model or "").strip() or None
     with _lock:
         state = _get_or_create(user_id)
         state.status = "running"
         state.updated_at = _now()
         state.message = "ESS 동기화 실행 중…"
+        if model_name:
+            state.message = f"ESS 동기화 실행 중… (model: {model_name})"
         _persist_state(user_id, state)
 
     logger.info(
-        "ESS sync starting user=%s full=%s script=%s",
+        "ESS sync starting user=%s full=%s model=%s script=%s",
         user_id,
         full,
+        model_name or "(default)",
         _SYNC_SCRIPT,
     )
     proc: subprocess.Popen[str] | None = None
@@ -349,10 +361,14 @@ def _run_sync(user_id: str, full: bool) -> None:
         cmd = [sys.executable, "-u", str(_SYNC_SCRIPT), "--user", user_id]
         if full:
             cmd.append("--full")
+        if model_name:
+            cmd.extend(["--model", model_name])
         logger.info("+ %s (detached)", " ".join(cmd))
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        if model_name:
+            env["ESS_VISION_MODEL"] = model_name
         popen_kwargs: dict[str, Any] = {
             "cwd": str(_REPO_ROOT),
             "stdout": subprocess.PIPE,

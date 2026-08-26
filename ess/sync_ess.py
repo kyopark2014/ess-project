@@ -8,9 +8,10 @@ Mirrors the document staging path from ``agent-wiki/graph/sync_wiki.py``:
 Working tree (per user)::
 
     .session_storage/{user}/ess/
-      raw/                  uploaded source files
+      docs/                 uploaded sources + extracted ``{stem}.md`` / ``{stem}.json``
+      doc_list.json         document registry (filename, created_at, md path, …)
       out/
-        converted/          staged .md (+ .pdf_pages for FMP)
+        converted/          FMP intermediates (``.pdf_pages`` only)
         manifest.json
         .last_fingerprint
 
@@ -73,29 +74,15 @@ def _safe_user(user_id: str) -> str:
 
 
 def _ess_dirs(user_id: str) -> tuple[Path, Path, Path, Path]:
+    from doc_list import migrate_raw_to_docs
+
     root = _session_storage() / _safe_user(user_id) / "ess"
-    raw = root / "raw"
+    docs = migrate_raw_to_docs(root)
     out = root / "out"
     converted = out / "converted"
-    for path in (root, raw, out, converted):
+    for path in (root, docs, out, converted):
         path.mkdir(parents=True, exist_ok=True)
-    return root, raw, out, converted
-
-
-def _fingerprint(raw_dir: Path) -> str:
-    parts: list[str] = []
-    if not raw_dir.is_dir():
-        return hashlib.sha256(b"").hexdigest()
-    for path in sorted(raw_dir.iterdir()):
-        if not path.is_file():
-            continue
-        try:
-            st = path.stat()
-            parts.append(f"{path.name}:{st.st_size}:{int(st.st_mtime)}")
-        except OSError:
-            continue
-    blob = "\n".join(parts).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    return root, docs, out, converted
 
 
 def _file_key(path: Path) -> str:
@@ -128,26 +115,96 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _chunk_text(text: str, *, max_chars: int = 10000) -> list[str]:
-    text = text.strip()
-    if not text:
+def _has_non_md_source(docs_dir: Path, stem: str) -> bool:
+    """True when ``stem.pdf`` / ``stem.txt`` / … exists (extraction sidecar peer)."""
+    for ext in (".pdf", ".txt", ".text", ".rst", ".markdown"):
+        if (docs_dir / f"{stem}{ext}").is_file():
+            return True
+    return False
+
+
+def _is_extraction_sidecar(path: Path) -> bool:
+    """Skip generated ``{stem}.md`` / ``{stem}.json`` sitting next to a source."""
+    suf = path.suffix.lower()
+    parent = path.parent
+    stem = path.stem
+    if suf == ".json":
+        return _has_non_md_source(parent, stem) or (parent / f"{stem}.md").is_file()
+    if suf == ".md":
+        return _has_non_md_source(parent, stem)
+    return False
+
+
+def _list_source_docs(docs_dir: Path) -> list[Path]:
+    """Source documents to convert (excludes extraction sidecars in ``docs/``)."""
+    if not docs_dir.is_dir():
         return []
-    if len(text) <= max_chars:
-        return [text]
-    chunks: list[str] = []
-    start = 0
-    overlap = 200
-    while start < len(text):
-        end = min(len(text), start + max_chars)
-        if end < len(text):
-            cut = text.rfind("\n\n", start + max_chars // 2, end)
-            if cut > start:
-                end = cut
-        chunks.append(text[start:end].strip())
-        if end >= len(text):
-            break
-        start = max(end - overlap, start + 1)
-    return [c for c in chunks if c]
+    files = [
+        p
+        for p in docs_dir.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in _DOC_EXTS
+        and not _is_extraction_sidecar(p)
+    ]
+    return sorted(files, key=lambda p: p.name.lower())
+
+
+def _fingerprint(docs_dir: Path) -> str:
+    """Fingerprint source docs only (ignore generated ``.md`` / ``.json`` sidecars)."""
+    parts: list[str] = []
+    for path in _list_source_docs(docs_dir):
+        try:
+            st = path.stat()
+            parts.append(f"{path.name}:{st.st_size}:{int(st.st_mtime)}")
+        except OSError:
+            continue
+    blob = "\n".join(parts).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _collect_image_info(pdf_work: Path | None) -> list[dict[str, Any]]:
+    if pdf_work is None:
+        return []
+    pages_dir = pdf_work / "pages"
+    if not pages_dir.is_dir():
+        return []
+    images: list[dict[str, Any]] = []
+    for path in sorted(pages_dir.glob("page_*.png")):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        page_num: int | None = None
+        try:
+            page_num = int(path.stem.split("_", 1)[1])
+        except (IndexError, ValueError):
+            page_num = None
+        images.append(
+            {
+                "name": path.name,
+                "path": str(path.resolve()),
+                "bytes": st.st_size,
+                "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                "page": page_num,
+            }
+        )
+    return images
+
+
+def _source_file_info(src: Path) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "name": src.name,
+        "path": str(src.resolve()),
+        "suffix": src.suffix.lower(),
+    }
+    try:
+        st = src.stat()
+        info["bytes"] = st.st_size
+        info["mtime"] = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+    except OSError:
+        info["bytes"] = 0
+        info["mtime"] = None
+    return info
 
 
 def _pdf_to_text(
@@ -200,6 +257,7 @@ def _incomplete_foundation_pdfs(
         return []
 
     cand_by_key: dict[str, Path] = {}
+    cand_by_name: dict[str, Path] = {}
     for c in candidates or []:
         p = Path(c)
         if not p.is_file() or p.suffix.lower() != ".pdf":
@@ -210,6 +268,7 @@ def _incomplete_foundation_pdfs(
             continue
         digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
         cand_by_key[f"{resolved.stem}_{digest}"] = resolved
+        cand_by_name[resolved.name] = resolved
 
     found: list[Path] = []
     seen: set[str] = set()
@@ -228,6 +287,25 @@ def _incomplete_foundation_pdfs(
                 src = None
         if src is None:
             src = cand_by_key.get(work.name)
+            if src is None:
+                # Match by stem prefix when path hash changed (sanitize/rename).
+                for key, cand in cand_by_key.items():
+                    if work.name.startswith(f"{cand.stem}_"):
+                        src = cand
+                        break
+            if src is None:
+                # Match by basename from source_path even if file moved.
+                if marker.is_file():
+                    try:
+                        line = marker.read_text(encoding="utf-8").strip().splitlines()[0]
+                        src = cand_by_name.get(Path(line).name)
+                    except (OSError, IndexError):
+                        src = None
+            if src is not None:
+                try:
+                    marker.write_text(str(src.resolve()) + "\n", encoding="utf-8")
+                except OSError:
+                    pass
         if src is None or not src.is_file():
             continue
 
@@ -248,7 +326,8 @@ def _incomplete_foundation_pdfs(
         found.append(src)
         print(
             f"  [resume] incomplete PDF {src.name}: "
-            f"{len(done)}/{len(page_pngs)} page(s)",
+            f"{len(done)}/{len(page_pngs)} page(s) "
+            f"(failed/missing will be re-extracted; done pages skip)",
             flush=True,
         )
     return found
@@ -273,17 +352,75 @@ def _clear_converted(stage: Path, *, keep_pdf_pages: bool = False) -> None:
 
 
 def _remove_staged_for_source(
-    stage: Path, source_path: str, previous_names: list[str]
+    stage: Path,
+    source_path: str,
+    previous_names: list[str],
+    *,
+    src: Path | None = None,
 ) -> None:
-    """Drop previous markdown chunks for a re-staged source."""
+    """Drop previous markdown/json outputs for a re-staged source."""
+    parents: list[Path] = [stage]
+    if src is not None:
+        parents.append(src.parent)
+    else:
+        try:
+            parents.append(Path(source_path).parent)
+        except Exception:
+            pass
+
+    seen: set[str] = set()
     for name in previous_names:
-        path = stage / name
-        if path.is_file():
+        for parent in parents:
+            path = parent / name
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    stem: str | None = None
+    if src is not None:
+        stem = src.stem
+        # Same-folder sidecars next to the source.
+        for path in (src.parent / f"{stem}.md", src.parent / f"{stem}.json"):
+            if src.suffix.lower() == ".md" and path.resolve() == src.resolve():
+                continue
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+    else:
+        try:
+            stem = Path(source_path).stem
+        except Exception:
+            stem = None
+
+    # Legacy chunked outputs under converted/
+    if stem:
+        for path in stage.glob(f"{stem}_part*.md"):
             try:
                 path.unlink()
             except OSError:
                 pass
-    # Also remove any chunk that still points at this source.
+        legacy = stage / f"{stem}.md"
+        if legacy.is_file():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        legacy_json = stage / f"{stem}.json"
+        if legacy_json.is_file():
+            try:
+                legacy_json.unlink()
+            except OSError:
+                pass
+
+    # Also remove any leftover converted chunk that still points at this source.
     for path in stage.glob("*.md"):
         try:
             head = path.read_text(encoding="utf-8", errors="replace")[:500]
@@ -296,35 +433,147 @@ def _remove_staged_for_source(
                 pass
 
 
+def _write_extraction_outputs(
+    src: Path,
+    body: str,
+    *,
+    user_id: str,
+    use_foundation_model: bool,
+    pdf_work: Path | None,
+) -> tuple[Path, Path]:
+    """Write ``{stem}.md`` + ``{stem}.json`` next to the source file."""
+    extracted_at = datetime.now(timezone.utc).isoformat()
+    out_dir = src.parent
+    md_name = f"{src.stem}.md"
+    json_name = f"{src.stem}.json"
+    md_path = out_dir / md_name
+    json_path = out_dir / json_name
+
+    # Uploaded ``.md`` sources: refresh body in place; never delete the upload.
+    header = (
+        f"---\nsource_file: \"{str(src.resolve())}\"\n"
+        f"extracted_by: \"{user_id}\"\n"
+        f"extracted_at: \"{extracted_at}\"\n---\n\n"
+    )
+    md_path.write_text(header + body.strip() + "\n", encoding="utf-8")
+
+    images = _collect_image_info(pdf_work)
+    meta: dict[str, Any] = {
+        "filename": md_name,
+        "json_filename": json_name,
+        "extracted_at": extracted_at,
+        "extracted_by": user_id,
+        "source": _source_file_info(src),
+        "images": images,
+        "image_count": len(images),
+        "page_count": len(images),
+        "char_count": len(body),
+        "foundation_model_parser": bool(
+            use_foundation_model and src.suffix.lower() == ".pdf"
+        ),
+        "markdown_path": str(md_path.resolve()),
+        "json_path": str(json_path.resolve()),
+    }
+    if pdf_work is not None:
+        meta["pdf_pages_dir"] = str(pdf_work.resolve())
+        pages_dir = pdf_work / "pages"
+        if pages_dir.is_dir():
+            meta["image_dir"] = str(pages_dir.resolve())
+        extracted_intermediate = pdf_work / "extracted.md"
+        if extracted_intermediate.is_file():
+            meta["extracted_intermediate"] = str(extracted_intermediate.resolve())
+
+    json_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return md_path, json_path
+
+
+def _resolve_pdf_work_dir(
+    pdf_pages_root: Path, src: Path, *, create: bool = True
+) -> Path:
+    """Locate ``.pdf_pages/{stem}_{hash}/`` for *src* (by path hash or source_path.txt)."""
+    original = str(src.resolve())
+    digest = hashlib.sha256(original.encode()).hexdigest()[:8]
+    preferred = pdf_pages_root / f"{src.stem}_{digest}"
+    if preferred.is_dir():
+        return preferred
+
+    # Fallback: any work dir whose source_path.txt points at this PDF (path rename).
+    if pdf_pages_root.is_dir():
+        for work in sorted(pdf_pages_root.iterdir()):
+            if not work.is_dir():
+                continue
+            marker = work / "source_path.txt"
+            if not marker.is_file():
+                continue
+            try:
+                line = marker.read_text(encoding="utf-8").strip().splitlines()[0]
+            except (OSError, IndexError):
+                continue
+            try:
+                if Path(line).resolve() == src.resolve():
+                    return work
+            except OSError:
+                if line == original or Path(line).name == src.name:
+                    return work
+            # Same stem under docs/ after sanitize/rename of parent folders.
+            if Path(line).name == src.name and work.name.startswith(f"{src.stem}_"):
+                return work
+
+    if create:
+        preferred.mkdir(parents=True, exist_ok=True)
+        (preferred / "source_path.txt").write_text(original + "\n", encoding="utf-8")
+        return preferred
+    return preferred
+
+
+def _foundation_extraction_complete(pdf_work: Path | None) -> bool:
+    """True when ``extracted.md`` has successful text for every page PNG."""
+    if pdf_work is None or not pdf_work.is_dir():
+        return False
+    from pdf2text import _EXTRACTED_NAME, _pages_done_in_md
+
+    pages_dir = pdf_work / "pages"
+    extracted = pdf_work / _EXTRACTED_NAME
+    if not pages_dir.is_dir() or not extracted.is_file():
+        return False
+    pngs = sorted(pages_dir.glob("page_*.png"))
+    if not pngs:
+        return False
+    done = _pages_done_in_md(extracted)
+    return len(done) >= len(pngs)
+
+
+def _read_extracted_markdown(pdf_work: Path) -> str:
+    from pdf2text import _EXTRACTED_NAME
+
+    return (pdf_work / _EXTRACTED_NAME).read_text(
+        encoding="utf-8", errors="replace"
+    ).strip()
+
+
 def _stage_docs_as_markdown(
     files: list[Path],
     stage: Path,
     *,
+    user_id: str,
     use_foundation_model: bool = False,
 ) -> dict[str, str]:
-    """Copy/convert docs into ``stage`` as ``.md`` files.
+    """Convert docs and write ``{stem}.md`` / ``{stem}.json`` next to each source.
 
+    ``stage`` (``out/converted``) holds FMP ``.pdf_pages`` intermediates only.
     Returns mapping of staged markdown absolute path → original source path.
+
+    When Foundation Model Parser has already extracted every page into
+    ``extracted.md`` (same resume rules as agent-wiki ``pdf2text``), LLM calls
+    are skipped and existing markdown is reused.
     """
     path_map: dict[str, str] = {}
-    used_names: set[str] = {p.name for p in stage.glob("*.md") if p.is_file()}
     pdf_pages_root = stage / ".pdf_pages"
     if use_foundation_model:
         pdf_pages_root.mkdir(parents=True, exist_ok=True)
-
-    def _unique(name: str) -> str:
-        if name not in used_names:
-            used_names.add(name)
-            return name
-        stem = Path(name).stem
-        suffix = Path(name).suffix
-        n = 2
-        while True:
-            candidate = f"{stem}_{n}{suffix}"
-            if candidate not in used_names:
-                used_names.add(candidate)
-                return candidate
-            n += 1
 
     for idx, src in enumerate(files, 1):
         suffix = src.suffix.lower()
@@ -341,11 +590,79 @@ def _stage_docs_as_markdown(
 
         original = str(src.resolve())
         pdf_work: Path | None = None
+        md_out = src.parent / f"{src.stem}.md"
+        json_out = src.parent / f"{src.stem}.json"
+
         if use_foundation_model and suffix == ".pdf":
-            digest = hashlib.sha256(original.encode()).hexdigest()[:8]
-            pdf_work = pdf_pages_root / f"{src.stem}_{digest}"
-            pdf_work.mkdir(parents=True, exist_ok=True)
+            pdf_work = _resolve_pdf_work_dir(pdf_pages_root, src, create=True)
             (pdf_work / "source_path.txt").write_text(original + "\n", encoding="utf-8")
+
+            # Already fully extracted → skip LLM (reuse extracted.md / docs md).
+            if _foundation_extraction_complete(pdf_work):
+                if md_out.is_file() and md_out.stat().st_size > 0:
+                    print(
+                        f"  skip (already extracted): {src.name} "
+                        f"→ {md_out.name}",
+                        flush=True,
+                    )
+                    path_map[str(md_out.resolve())] = original
+                    print(
+                        f'[ess progress] name="{src.name}" fi={idx} fn={len(files)} pct='
+                        f"{int(round(100.0 * idx / max(len(files), 1)))} "
+                        f"| {src.name} · 파일 {idx}/{len(files)} · 완료 (skip)",
+                        flush=True,
+                    )
+                    continue
+                # Final md missing but intermediates complete — rebuild without LLM.
+                body = (
+                    f"# {src.stem}\n\nSource: `{src}`\n\n"
+                    + _read_extracted_markdown(pdf_work)
+                )
+                md_path, json_path = _write_extraction_outputs(
+                    src,
+                    body,
+                    user_id=user_id,
+                    use_foundation_model=True,
+                    pdf_work=pdf_work,
+                )
+                path_map[str(md_path.resolve())] = original
+                print(
+                    f"  stage {src.name} → {md_path.name} + {json_path.name} "
+                    f"(from extracted.md, no LLM)",
+                    flush=True,
+                )
+                print(
+                    f'[ess progress] name="{src.name}" fi={idx} fn={len(files)} pct='
+                    f"{int(round(100.0 * idx / max(len(files), 1)))} "
+                    f"| {src.name} · 파일 {idx}/{len(files)} · 완료",
+                    flush=True,
+                )
+                continue
+
+        # Non-PDF (or incomplete FMP): if final md already exists and is fresh
+        # relative to source, skip re-convert.
+        if (
+            suffix != ".pdf"
+            and md_out.is_file()
+            and md_out.stat().st_size > 0
+            and json_out.is_file()
+        ):
+            try:
+                if md_out.stat().st_mtime >= src.stat().st_mtime:
+                    print(
+                        f"  skip (already extracted): {src.name} → {md_out.name}",
+                        flush=True,
+                    )
+                    path_map[str(md_out.resolve())] = original
+                    print(
+                        f'[ess progress] name="{src.name}" fi={idx} fn={len(files)} pct='
+                        f"{int(round(100.0 * idx / max(len(files), 1)))} "
+                        f"| {src.name} · 파일 {idx}/{len(files)} · 완료 (skip)",
+                        flush=True,
+                    )
+                    continue
+            except OSError:
+                pass
 
         try:
             body = _doc_to_markdown_body(
@@ -359,42 +676,23 @@ def _stage_docs_as_markdown(
         if body is None:
             print(f"  skip unsupported: {src.name}", flush=True)
             continue
-
-        if src.suffix.lower() == ".md" and len(body) <= 12000:
-            name = _unique(src.name if src.name.endswith(".md") else f"{src.stem}.md")
-            dest = stage / name
-            dest.write_text(body, encoding="utf-8")
-            path_map[str(dest.resolve())] = original
-            print(
-                f'[ess progress] name="{src.name}" fi={idx} fn={len(files)} pct='
-                f"{int(round(100.0 * idx / max(len(files), 1)))} "
-                f"| {src.name} · 파일 {idx}/{len(files)} · 완료",
-                flush=True,
-            )
-            continue
-
-        parts = _chunk_text(body, max_chars=10000)
-        if not parts:
+        if not body.strip():
             print(f"  skip empty after convert: {src.name}", flush=True)
             continue
+
+        md_path, json_path = _write_extraction_outputs(
+            src,
+            body,
+            user_id=user_id,
+            use_foundation_model=use_foundation_model,
+            pdf_work=pdf_work,
+        )
+        path_map[str(md_path.resolve())] = original
         print(
-            f"  stage {src.name} → {len(parts)} markdown chunk(s) "
-            f"({sum(len(p) for p in parts)} chars)",
+            f"  stage {src.name} → {md_path.name} + {json_path.name} "
+            f"({len(body)} chars)",
             flush=True,
         )
-        for i, part in enumerate(parts, 1):
-            if len(parts) == 1:
-                name = _unique(f"{src.stem}.md")
-            else:
-                name = _unique(f"{src.stem}_part{i:02d}.md")
-            dest = stage / name
-            header = (
-                f"---\nsource_file: \"{original}\"\n"
-                f"chunk: {i}\nchunks: {len(parts)}\n---\n\n"
-            )
-            dest.write_text(header + part, encoding="utf-8")
-            path_map[str(dest.resolve())] = original
-
         print(
             f'[ess progress] name="{src.name}" fi={idx} fn={len(files)} pct='
             f"{int(round(100.0 * idx / max(len(files), 1)))} "
@@ -405,22 +703,25 @@ def _stage_docs_as_markdown(
     return path_map
 
 
-def _list_raw_docs(raw_dir: Path) -> list[Path]:
-    files = [
-        p
-        for p in raw_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in _DOC_EXTS
-    ]
-    return sorted(files, key=lambda p: p.name.lower())
+def sync_user(
+    user_id: str,
+    *,
+    full: bool = False,
+    model: str | None = None,
+) -> int:
+    from doc_list import mark_extracted, remove_document, sync_doc_list_with_filesystem
 
+    model_name = (model or "").strip()
+    if model_name:
+        os.environ["ESS_VISION_MODEL"] = model_name
+        print(f"ESS vision model: {model_name}", flush=True)
 
-def sync_user(user_id: str, *, full: bool = False) -> int:
-    ess_root, raw_dir, out_dir, converted = _ess_dirs(user_id)
+    ess_root, docs_dir, out_dir, converted = _ess_dirs(user_id)
     settings = _load_settings(user_id)
     use_fmp = bool(settings.get("ess_foundation_model_parser_enabled", True))
 
-    files = _list_raw_docs(raw_dir)
-    fp = _fingerprint(raw_dir)
+    files = _list_source_docs(docs_dir)
+    fp = _fingerprint(docs_dir)
     fp_path = out_dir / ".last_fingerprint"
     prev = fp_path.read_text(encoding="utf-8").strip() if fp_path.is_file() else ""
     prev_manifest = _load_manifest(out_dir)
@@ -436,11 +737,14 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
 
     if not full and fp == prev and prev and not incomplete:
         print("No files changed since last run. Nothing to update.")
+        # Keep registry in sync with filesystem even on no-op.
+        sync_doc_list_with_filesystem(ess_root, user_id=user_id)
         return 0
 
     if not files and not incomplete:
-        print("No files in ess/raw. Nothing to update.")
+        print("No files in ess/docs. Nothing to update.")
         fp_path.write_text(fp + "\n", encoding="utf-8")
+        sync_doc_list_with_filesystem(ess_root, user_id=user_id)
         return 0
 
     mode = "foundation-model" if use_fmp else "pdfplumber/pypdf"
@@ -449,8 +753,16 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
 
     to_stage: list[Path] = []
     if full or not prev:
-        print("[ess sync] full convert — refreshing converted/", flush=True)
+        print("[ess sync] full convert — refreshing intermediates + outputs", flush=True)
         _clear_converted(converted, keep_pdf_pages=use_fmp)
+        # Drop legacy chunked markdown left under converted/ and prior docs sidecars.
+        for src in files:
+            _remove_staged_for_source(
+                converted,
+                str(src.resolve()),
+                [],
+                src=src,
+            )
         to_stage = list(files)
     else:
         # Incremental: only new/changed + incomplete resumes.
@@ -463,15 +775,27 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
                 changed.append(src)
                 names = meta.get("converted") or []
                 if isinstance(names, list):
-                    _remove_staged_for_source(converted, key, [str(n) for n in names])
-        # Drop converted entries for deleted sources.
+                    _remove_staged_for_source(
+                        converted,
+                        key,
+                        [str(n) for n in names],
+                        src=src,
+                    )
+        # Drop outputs for deleted sources.
         live = {str(p.resolve()) for p in files}
         for key, meta in list(prev_files.items()):
             if key in live:
                 continue
             names = meta.get("converted") or []
+            src_hint = Path(key) if key.startswith("/") else None
             if isinstance(names, list):
-                _remove_staged_for_source(converted, key, [str(n) for n in names])
+                _remove_staged_for_source(
+                    converted,
+                    key,
+                    [str(n) for n in names],
+                    src=src_hint if src_hint and src_hint.is_file() else None,
+                )
+            remove_document(ess_root, source_path=key)
 
         seen = {str(p.resolve()) for p in changed}
         for src in incomplete:
@@ -483,6 +807,7 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
         if not to_stage:
             print("No files changed since last run. Nothing to update.")
             fp_path.write_text(fp + "\n", encoding="utf-8")
+            sync_doc_list_with_filesystem(ess_root, user_id=user_id)
             return 0
         print(
             f"[ess sync] incremental: {len(to_stage)} file(s) to convert",
@@ -496,20 +821,38 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
         )
 
     print(
-        f"[ess sync] staging {len(to_stage)} file(s) → {converted}",
+        f"[ess sync] staging {len(to_stage)} file(s) → {docs_dir} "
+        f"(intermediates: {converted})",
         flush=True,
     )
     path_map = _stage_docs_as_markdown(
-        to_stage, converted, use_foundation_model=use_fmp
+        to_stage,
+        converted,
+        user_id=user_id,
+        use_foundation_model=use_fmp,
     )
     if not path_map and to_stage:
         print("[ess sync] WARNING: no markdown produced", flush=True)
 
-    # Rebuild file_index for all current raw docs (preserve untouched entries).
+    # Update doc_list for freshly staged markdown.
+    for md_path, source in path_map.items():
+        md = Path(md_path)
+        json_sidecar = md.with_suffix(".json")
+        mark_extracted(
+            ess_root,
+            source_path=source,
+            md_path=str(md.resolve()),
+            json_path=str(json_sidecar.resolve()) if json_sidecar.is_file() else None,
+            user_id=user_id,
+        )
+
+    # Rebuild file_index for all current source docs (preserve untouched entries).
     file_index: dict[str, Any] = {}
     staged_by_source: dict[str, list[str]] = {}
     for md_path, source in path_map.items():
-        staged_by_source.setdefault(source, []).append(Path(md_path).name)
+        md = Path(md_path)
+        names = [md.name, f"{md.stem}.json"]
+        staged_by_source.setdefault(source, []).extend(names)
 
     for src in files:
         key = str(src.resolve())
@@ -518,22 +861,44 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
         else:
             old = prev_files.get(key) or {}
             converted_names = list(old.get("converted") or [])
+            md_sidecar = src.parent / f"{src.stem}.md"
+            json_sidecar = src.parent / f"{src.stem}.json"
+            current: list[str] = []
+            if src.suffix.lower() == ".md":
+                current.append(src.name)
+            elif md_sidecar.is_file():
+                current.append(md_sidecar.name)
+            if json_sidecar.is_file():
+                current.append(json_sidecar.name)
+            if current:
+                converted_names = current
         file_index[key] = {
             "name": src.name,
             "fingerprint": _file_key(src),
             "converted": converted_names,
             "bytes": src.stat().st_size if src.is_file() else 0,
+            "output_dir": str(src.parent.resolve()),
         }
 
-    md_count = len(list(converted.glob("*.md")))
+    md_count = sum(
+        1
+        for src in files
+        if (src.parent / f"{src.stem}.md").is_file()
+    )
     synced_at = datetime.now(timezone.utc).isoformat()
+    # Final registry rebuild so deleted/renamed files stay consistent.
+    doc_list = sync_doc_list_with_filesystem(ess_root, user_id=user_id)
     manifest = {
         "user_id": user_id,
         "synced_at": synced_at,
         "foundation_model_parser_enabled": use_fmp,
         "fingerprint": fp,
         "ess_dir": str(ess_root),
+        "docs_dir": str(docs_dir),
+        "raw_dir": str(docs_dir),  # backward-compatible
         "converted_dir": str(converted),
+        "doc_list": str(ess_root / "doc_list.json"),
+        "doc_count": len(doc_list.get("documents") or []),
         "package": str(_project_root() / "ess"),
         "staged_this_run": len(path_map),
         "markdown_files": md_count,
@@ -564,7 +929,9 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
                 "markdown_files": md_count,
                 "foundation_model_parser_enabled": use_fmp,
                 "session_ess_dir": str(ess_root),
+                "docs_dir": str(docs_dir),
                 "converted_dir": str(converted),
+                "doc_list": str(ess_root / "doc_list.json"),
             },
             ensure_ascii=False,
             indent=2,
@@ -576,7 +943,7 @@ def sync_user(user_id: str, *, full: bool = False) -> int:
     fmp_label = "Foundation Model Parser On" if use_fmp else "Foundation Model Parser Off"
     print(
         f"ESS sync complete: {len(to_stage)} source(s) → {md_count} markdown "
-        f"in converted/. {fmp_label}.",
+        f"in docs/. {fmp_label}.",
         flush=True,
     )
     return 0
@@ -590,9 +957,18 @@ def main() -> int:
         action="store_true",
         help="Force full re-convert of all raw files",
     )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Vision/LLM model name from UI selector (e.g. 'Claude 4.6 Sonnet')",
+    )
     args = parser.parse_args()
     try:
-        return sync_user(args.user, full=args.full)
+        return sync_user(
+            args.user,
+            full=args.full,
+            model=(args.model or "").strip() or None,
+        )
     except SystemExit as exc:
         code = exc.code
         return int(code) if isinstance(code, int) else 1

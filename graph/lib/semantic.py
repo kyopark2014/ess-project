@@ -49,7 +49,7 @@ def _is_corpus_md(path: Path, corpus_dir: Path) -> bool:
 
     Wiki Sync keeps progressive ``extracted.md`` under
     ``converted/.pdf_pages/{stem}_{hash}/``; those are intermediates and must
-    not be fed to semantic extraction (final text lives in ``*_partNN.md``).
+    not be fed to semantic extraction (final text lives in ``{stem}.md`` next to the source).
     """
     if not path.is_file() or path.name == ".gitkeep":
         return False

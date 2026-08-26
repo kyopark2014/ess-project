@@ -115,31 +115,76 @@ def _emit_ess_progress(
     print(f"[ess progress] {' '.join(parts)} | {human}", flush=True)
 
 
-def _get_vision_chat():
-    """Create ChatBedrock for page-image → Markdown (Foundation Model Parser)."""
+def _vision_max_tokens(model_id: str, model_type: str) -> int:
+    mid = (model_id or "").lower()
+    if "claude-sonnet-5" in mid or "claude-5-sonnet" in mid or "claude-opus-5" in mid:
+        return 128000
+    if "claude-4" in mid or "claude-sonnet-4" in mid or "claude-opus-4" in mid:
+        return 16384
+    if model_type == "openai":
+        return 8192
+    return 8192
+
+
+def _get_vision_chat(model_name: str | None = None):
+    """Create multimodal chat for page-image → Markdown (Foundation Model Parser).
+
+    Uses the UI-selected model when provided (or ``ESS_VISION_MODEL`` env).
+
+    OpenAI GPT models (``mantle_api=responses``) use Bedrock Mantle + ChatOpenAI,
+    matching docgraph-intelligence ``graph/lib/img2text.py``. Claude uses ChatBedrock.
+    """
     import boto3
     from botocore.config import Config
     from langchain_aws import ChatBedrock
+    from langchain_openai import ChatOpenAI
 
+    import bedrock_data_retention
     import info
     import utils
 
     config = utils.load_config()
-    bedrock_region = config.get("region", "us-west-2")
-    models = info.get_model_info("Claude 5.0 Sonnet")
+    preferred = (
+        (model_name or "").strip()
+        or (os.environ.get("ESS_VISION_MODEL") or "").strip()
+        or "Claude 5.0 Sonnet"
+    )
+    models = info.get_model_info(preferred)
+    if not models:
+        print(
+            f"  [foundation model] unknown model {preferred!r}; "
+            "falling back to Claude 5.0 Sonnet",
+            flush=True,
+        )
+        preferred = "Claude 5.0 Sonnet"
+        models = info.get_model_info(preferred)
     profile = models[0]
     model_id = profile["model_id"]
     model_type = profile["model_type"]
+    bedrock_region = profile.get("bedrock_region") or config.get("region", "us-west-2")
+    mantle_api = profile.get("mantle_api", "chat")
+    max_tokens = _vision_max_tokens(model_id, model_type)
+
+    # OpenAI-on-Bedrock: Mantle Responses API (same as docgraph img2text / chat.py).
+    if model_type == "openai" and mantle_api == "responses":
+
+        def bearer_token_provider() -> str:
+            return bedrock_data_retention.get_bedrock_bearer_token(bedrock_region)
+
+        print(
+            f"  [foundation model] vision model={preferred} id={model_id} "
+            f"via=mantle region={bedrock_region}",
+            flush=True,
+        )
+        return ChatOpenAI(
+            model=model_id,
+            api_key=bearer_token_provider,
+            base_url=f"https://bedrock-mantle.{bedrock_region}.api.aws/openai/v1",
+            use_responses_api=True,
+            max_tokens=max_tokens,
+        )
 
     stop_sequence = "\n\nHuman:" if model_type == "claude" else ""
-    mid = (model_id or "").lower()
-    if "claude-sonnet-5" in mid or "claude-5-sonnet" in mid or "claude-opus-5" in mid:
-        max_tokens = 128000
-    elif "claude-4" in mid or "claude-sonnet-4" in mid or "claude-opus-4" in mid:
-        max_tokens = 16384
-    else:
-        max_tokens = 8192
-
     boto3_bedrock = boto3.client(
         service_name="bedrock-runtime",
         region_name=bedrock_region,
@@ -148,10 +193,9 @@ def _get_vision_chat():
             read_timeout=300,
         ),
     )
-    parameters = {
-        "max_tokens": max_tokens,
-        "stop_sequences": [stop_sequence],
-    }
+    parameters: dict = {"max_tokens": max_tokens}
+    if model_type == "claude":
+        parameters["stop_sequences"] = [stop_sequence]
     chat_kwargs = {
         "model_id": model_id,
         "client": boto3_bedrock,
@@ -160,6 +204,11 @@ def _get_vision_chat():
     }
     if model_type == "claude":
         chat_kwargs["provider"] = "anthropic"
+    print(
+        f"  [foundation model] vision model={preferred} id={model_id} "
+        f"via=bedrock region={bedrock_region}",
+        flush=True,
+    )
     return ChatBedrock(**chat_kwargs)
 
 
@@ -269,12 +318,17 @@ def _extract_text_with_llm(img_base64: str, prompt: Optional[str] = None) -> str
                 attempt,
                 _MAX_LLM_ATTEMPTS,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "LLM error on attempt %s/%s:\n%s",
                 attempt,
                 _MAX_LLM_ATTEMPTS,
                 traceback.format_exc(),
+            )
+            print(
+                f"  [foundation model] LLM error attempt {attempt}/{_MAX_LLM_ATTEMPTS}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
             )
             extracted_text = ""
         if attempt < _MAX_LLM_ATTEMPTS:
@@ -482,6 +536,20 @@ def pdf_to_text_foundation_model(
 
         total_pages = len(images)
         done = _pages_done_in_md(extracted_md)
+        if done and len(done) >= total_pages:
+            print(
+                f"  [foundation model] skip LLM — all {total_pages} page(s) "
+                f"already in {extracted_md.name}",
+                flush=True,
+            )
+            _emit_ess_progress(
+                path.name,
+                page=total_pages,
+                page_n=total_pages,
+                detail="이미 추출됨 (skip)",
+            )
+            return extracted_md.read_text(encoding="utf-8", errors="replace").strip()
+
         if done:
             print(
                 f"  [foundation model] resume: {len(done)}/{total_pages} page(s) "

@@ -86,7 +86,14 @@ if os.path.isdir(_WEB_DIST):
                 return FileResponse(file_path)
         index_path = os.path.join(_WEB_DIST, "index.html")
         if os.path.isfile(index_path):
-            return FileResponse(index_path)
+            # Avoid stale SPA shells that still call legacy multipart /api/ess/docs.
+            return FileResponse(
+                index_path,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                },
+            )
         return HTMLResponse(
             "<h1>Frontend not built</h1>"
             "<p>Run <code>cd application/web && npm install && npm run build</code></p>",

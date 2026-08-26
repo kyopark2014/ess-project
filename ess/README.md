@@ -12,20 +12,33 @@ Settings → **ESS** → Sync / Configure
 | Foundation Model Parser On (기본) | PDF → 페이지 PNG (PyMuPDF) → Bedrock multimodal Markdown |
 | Foundation Model Parser Off | pdfplumber / pypdf 텍스트 추출 |
 
-## 위키에서 가져온 핵심 파일
+## 핵심 파일
 
 | 파일 | 출처 | 역할 |
 |------|------|------|
 | `pdf2text.py` | `agent-wiki/graph/pdf2text.py` | PDF→이미지→Markdown / classical 추출 |
-| `sync_ess.py` | `sync_wiki.py` 스테이징 로직 | raw → `out/converted/` |
+| `sync_ess.py` | `sync_wiki.py` 스테이징 로직 | docs → md/json + FMP intermediates |
+| `doc_list.py` | (신규) | `doc_list.json` 문서 레지스트리 관리 |
 
 ## 경로
 
 | 항목 | 경로 |
 |------|------|
-| 업로드 | `.session_storage/{user}/ess/raw/` |
-| 변환 결과 | `.session_storage/{user}/ess/out/converted/*.md` |
-| FMP 페이지/중간 | `.../converted/.pdf_pages/{stem}_{hash}/pages/` + `extracted.md` |
+| 업로드 | `.session_storage/{user}/ess/docs/` |
+| 문서 목록 | `.session_storage/{user}/ess/doc_list.json` |
+| 변환 결과 | `.session_storage/{user}/ess/docs/{stem}.md` + `{stem}.json` (원본과 동일 폴더) |
+| FMP 페이지/중간 | `.../out/converted/.pdf_pages/{stem}_{hash}/pages/` + `extracted.md` |
+
+`doc_list.json`은 `ess/doc_list.py`가 관리하며, 문서 추가(업로드)와 Sync 추출 완료 시마다 갱신됩니다.
+항목에는 파일명, 생성일, md 파일 위치, 상태 등이 들어갑니다.
+
+업로드 시 파일명은 sanitize됩니다 (공백→`_`, 특수문자 제거). 예: `s9540_3_2025 1.pdf` → `s9540_3_2025_1.pdf`.
+원본 이름은 `doc_list.json`의 `original_filename`에 보관됩니다.
+
+대용량 문서는 RAG/Load files와 같이 **S3 presigned PUT**으로 업로드합니다
+(`POST /api/ess/docs/presign` → browser PUT → `POST /api/ess/docs/complete`).
+
+`{stem}.json`에는 파일명, 추출완료시간, 추출한 사람(아이디), 이미지 파일 정보, 원본 PDF 정보 등이 들어갑니다.
 
 ## 단독 실행
 
@@ -33,4 +46,5 @@ Settings → **ESS** → Sync / Configure
 cd ess-project
 python ess/sync_ess.py --user ksdyb
 python ess/sync_ess.py --user ksdyb --full
+python ess/doc_list.py --ess-root application/.session_storage/ksdyb/ess --user ksdyb --rebuild
 ```

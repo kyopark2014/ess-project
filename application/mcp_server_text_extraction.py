@@ -22,8 +22,10 @@ import boto3
 from botocore.config import Config
 from langchain_aws import ChatBedrock
 from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
 from PIL import Image
 
+import bedrock_data_retention
 import info
 import utils
 
@@ -61,8 +63,11 @@ except Exception as e:
 
 
 def _get_chat():
-    """Create ChatBedrock instance for text extraction."""
-    stop_sequence = "\n\nHuman:" if model_type == "claude" else ""
+    """Create multimodal chat for text extraction.
+
+    OpenAI GPT (``mantle_api=responses``) → Bedrock Mantle ChatOpenAI
+    (same as docgraph-intelligence). Claude → ChatBedrock.
+    """
     mid = (model_id or "").lower()
     if "claude-sonnet-5" in mid or "claude-5-sonnet" in mid or "claude-opus-5" in mid:
         max_tokens = 128000
@@ -71,9 +76,26 @@ def _get_chat():
     else:
         max_tokens = 8192
 
+    region = profile.get("bedrock_region", bedrock_region)
+    mantle_api = profile.get("mantle_api", "chat")
+
+    if model_type == "openai" and mantle_api == "responses":
+
+        def bearer_token_provider() -> str:
+            return bedrock_data_retention.get_bedrock_bearer_token(region)
+
+        return ChatOpenAI(
+            model=model_id,
+            api_key=bearer_token_provider,
+            base_url=f"https://bedrock-mantle.{region}.api.aws/openai/v1",
+            use_responses_api=True,
+            max_tokens=max_tokens,
+        )
+
+    stop_sequence = "\n\nHuman:" if model_type == "claude" else ""
     boto3_bedrock = boto3.client(
         service_name="bedrock-runtime",
-        region_name=bedrock_region,
+        region_name=region,
         config=Config(
             retries={"max_attempts": 30},
             read_timeout=300,
@@ -82,16 +104,15 @@ def _get_chat():
 
     # Do not pass temperature/top_k: Claude 5.x (and some 4.x) reject them
     # with ValidationException: "`temperature` is deprecated for this model."
-    parameters = {
-        "max_tokens": max_tokens,
-        "stop_sequences": [stop_sequence],
-    }
+    parameters: dict = {"max_tokens": max_tokens}
+    if model_type == "claude":
+        parameters["stop_sequences"] = [stop_sequence]
 
     chat_kwargs = {
         "model_id": model_id,
         "client": boto3_bedrock,
         "model_kwargs": parameters,
-        "region_name": bedrock_region,
+        "region_name": region,
     }
     if model_type == "claude":
         chat_kwargs["provider"] = "anthropic"

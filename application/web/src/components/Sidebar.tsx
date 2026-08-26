@@ -162,7 +162,7 @@ export function Sidebar({
     setEssSyncBusy(true);
     setEssSyncMessage("ESS 동기화를 시작합니다…");
     try {
-      const result = await api.syncEss(false);
+      const result = await api.syncEss(false, modelName || undefined);
       const status = result.status;
       if (status === "error") {
         setEssSyncBusy(false);
@@ -357,6 +357,26 @@ export function Sidebar({
         </div>
 
         <button
+          ref={essBtnRef}
+          type="button"
+          className={`sidebar-menu-btn${drawer === "ess" || essSyncBusy ? " is-active" : ""}`}
+          aria-expanded={drawer === "ess"}
+          aria-haspopup="dialog"
+          title={essSyncMessage ?? "ESS"}
+          onClick={() => {
+            setSettingsExpanded(false);
+            if (drawer === "ess") {
+              onCloseDrawer();
+            } else {
+              onOpenDrawer("ess");
+            }
+          }}
+        >
+          <EssIcon className="sidebar-icon" />
+          <span>{essSyncBusy ? "ESS (Syncing…)" : "ESS"}</span>
+        </button>
+
+        <button
           ref={modelBtnRef}
           type="button"
           className={`sidebar-menu-btn${drawer === "model" ? " is-active" : ""}`}
@@ -423,18 +443,6 @@ export function Sidebar({
               >
                 <McpIcon className="sidebar-icon" />
                 <span>MCP ({mcpServers.length})</span>
-              </button>
-              <button
-                ref={essBtnRef}
-                type="button"
-                className={`sidebar-menu-btn${drawer === "ess" || essSyncBusy ? " is-active" : ""}`}
-                aria-expanded={drawer === "ess"}
-                aria-haspopup="dialog"
-                title={essSyncMessage ?? "ESS"}
-                onClick={() => toggleDrawer("ess")}
-              >
-                <EssIcon className="sidebar-icon" />
-                <span>{essSyncBusy ? "ESS (Syncing…)" : "ESS"}</span>
               </button>
               <label className="sidebar-menu-btn settings-toggle">
                 <GuardrailIcon className="sidebar-icon" />
