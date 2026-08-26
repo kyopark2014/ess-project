@@ -151,11 +151,16 @@ export const api = {
     request<{ ok: boolean }>(`/api/tasks/${id}`, { method: "DELETE" }),
   getMessages: (id: string) =>
     request<{ messages: Message[] }>(`/api/tasks/${id}/messages`),
-  uploadToRag: async (file: File): Promise<RagUploadResult> => {
-    uiLog("rag:upload start", { name: file.name, size: file.size });
+  uploadToRag: async (
+    file: File,
+    options?: { sync?: boolean },
+    ): Promise<RagUploadResult> => {
+    const sync = options?.sync !== false;
+    uiLog("rag:upload start", { name: file.name, size: file.size, sync });
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch("/api/rag/upload", {
+    const qs = sync ? "" : "?sync=false";
+    const res = await fetch(`/api/rag/upload${qs}`, {
       method: "POST",
       credentials: "include",
       body: form,

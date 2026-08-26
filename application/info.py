@@ -1,0 +1,418 @@
+nova_premier = [
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-premier-v1:0"    
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-premier-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-premier-v1:0"
+    }
+]
+
+nova_pro_models = [   # Nova Pro
+    {   
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-pro-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-pro-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-pro-v1:0"
+    }
+]
+
+nova_lite_models = [   # Nova Pro
+    {   
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-lite-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-lite-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-lite-v1:0"
+    }
+]
+
+nova_micro_models = [   # Nova Micro
+    {   
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-micro-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-micro-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-micro-v1:0"
+    }
+]
+
+nova_2_lite_models = [   # Nova 2 Lite
+    {   
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-2-lite-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-2-lite-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "nova",
+        "model_id": "us.amazon.nova-2-lite-v1:0"
+    }
+]
+
+claude_5_0_sonnet_models = [   # Sonnet 5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-5"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-5"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-5"
+    }
+]
+
+claude_5_0_opus_models = [   # Opus 5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-5"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-5"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-5"
+    }
+]
+
+claude_fable_5_models = [   # Claude Fable 5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-fable-5"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-fable-5"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-fable-5"
+    }
+]
+
+claude_4_8_opus_models = [   # Opus 4.8
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-8"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-8"
+    }
+]
+
+claude_4_7_opus_models = [   # Opus 4.7
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-7"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-7"
+    }
+]
+
+claude_4_6_sonnet_models = [   # Sonnet 4.6
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-4-6"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-4-6"
+    }
+]
+
+claude_4_6_opus_models = [   # Opus 4.6
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-6-v1"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-6-v1"
+    }
+]
+
+claude_4_5_haiku_models = [   # Haiku 4.5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
+]
+
+claude_4_5_opus_models = [   # Opus 4.5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-5-20251101-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-5-20251101-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-opus-4-5-20251101-v1:0"
+    }
+]
+
+claude_4_5_sonnet_models = [   # Sonnet 4.5
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "claude",
+        "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    }
+]
+
+openai_gpt_54_models = [
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.4",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.4",
+        "mantle_api": "responses",
+    },
+]
+
+openai_gpt_5_5_models = [
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.5",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.5",
+        "mantle_api": "responses",
+    },
+]
+
+openai_gpt_5_6_sol_models = [   # GPT-5.6 Sol
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-sol",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-sol",
+        "mantle_api": "responses",
+    },
+]
+
+openai_gpt_5_6_terra_models = [   # GPT-5.6 Terra
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-terra",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-terra",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-terra",
+        "mantle_api": "responses",
+    },
+]
+
+openai_gpt_5_6_luna_models = [   # GPT-5.6 Luna
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-luna",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-1", # N.Virginia
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-luna",
+        "mantle_api": "responses",
+    },
+    {
+        "bedrock_region": "us-east-2", # Ohio
+        "model_type": "openai",
+        "model_id": "openai.gpt-5.6-luna",
+        "mantle_api": "responses",
+    },
+]
+
+
+openai_oss_120b_models = [
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "openai",
+        "model_id": "openai.gpt-oss-120b-1:0"
+    }
+]
+
+openai_oss_20b_models = [
+    {
+        "bedrock_region": "us-west-2", # Oregon
+        "model_type": "openai",
+        "model_id": "openai.gpt-oss-20b-1:0"
+    }
+]
+
+def get_model_info(model_name):
+    models = []
+
+    if model_name == "Nova Pro":
+        models = nova_pro_models
+    elif model_name == "Nova Lite":
+        models = nova_lite_models
+    elif model_name == "Nova Micro":
+        models = nova_micro_models
+    elif model_name == "Nova 2 Lite":
+        models = nova_2_lite_models
+    elif model_name == "Claude Fable 5":
+        models = claude_fable_5_models
+    elif model_name == "Claude 4.5 Opus":
+        models = claude_4_5_opus_models
+    elif model_name == "Claude 4.5 Sonnet":
+        models = claude_4_5_sonnet_models
+    elif model_name == "Claude 4.5 Haiku":
+        models = claude_4_5_haiku_models
+    elif model_name == "Claude 4.6 Sonnet":
+        models = claude_4_6_sonnet_models
+    elif model_name == "Claude 5.0 Sonnet":
+        models = claude_5_0_sonnet_models
+    elif model_name == "Claude 5.0 Opus":
+        models = claude_5_0_opus_models
+    elif model_name == "Claude 4.6 Opus":
+        models = claude_4_6_opus_models
+    elif model_name == "Claude 4.7 Opus":
+        models = claude_4_7_opus_models
+    elif model_name == "Claude 4.8 Opus":
+        models = claude_4_8_opus_models
+    elif model_name == "Nova Premier":
+        models = nova_premier
+    elif model_name == "OpenAI GPT 5.4":
+        models = openai_gpt_54_models
+    elif model_name == "OpenAI GPT 5.5":
+        models = openai_gpt_5_5_models
+    elif model_name == "OpenAI GPT 5.6 Sol":
+        models = openai_gpt_5_6_sol_models
+    elif model_name == "OpenAI GPT 5.6 Terra":
+        models = openai_gpt_5_6_terra_models
+    elif model_name == "OpenAI GPT 5.6 Luna":
+        models = openai_gpt_5_6_luna_models
+    elif model_name == "OpenAI OSS 120B":
+        models = openai_oss_120b_models
+    elif model_name == "OpenAI OSS 20B":
+        models = openai_oss_20b_models
+
+    return models
+
+STOP_SEQUENCE_CLAUDE = "\n\nHuman:" 
+STOP_SEQUENCE_NOVA = '"\n\n<thinking>", "\n<thinking>", " <thinking>"'
+
+def get_stop_sequence(model_name):
+    models = get_model_info(model_name)
+
+    model_type = models[0]["model_type"]
+
+    if model_type == "claude":
+        return STOP_SEQUENCE_CLAUDE
+    elif model_type == "nova":
+        return STOP_SEQUENCE_NOVA
+    else:
+        return ""
