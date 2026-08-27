@@ -110,7 +110,7 @@ export function EssDocumentListModal({ onClose }: Props) {
       }}
     >
       <div className="modal ess-doc-list-modal">
-        <h2 id="ess-doc-list-title">Document List</h2>
+        <h2 id="ess-doc-list-title">Regulations</h2>
         {loading ? (
           <p className="ess-configure-muted">문서 목록을 불러오는 중…</p>
         ) : error ? (

@@ -145,7 +145,7 @@ def _ensure_ess_on_path() -> str:
 
 
 def ensure_user_ess_dir(user_id: str | None) -> str:
-    """Create ``{user}/ess``, ``docs/``, ``out/``, ``out/converted/`` and return ESS root."""
+    """Create ``{user}/ess``, ``regulations/``, ``out/``, ``out/converted/`` and return ESS root."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         raise ValueError(
@@ -155,7 +155,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
     ess_dir = os.path.join(SESSION_STORAGE_DIR, segment, "ess")
     for name in (
         "",
-        "docs",
+        "regulations",
         "out",
         os.path.join("out", "converted"),
         os.path.join("out", "converted", ".pdf_pages"),
@@ -173,7 +173,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
 
         migrate_raw_to_docs(ess_dir)
         if not doc_list_path(ess_dir).is_file():
-            docs = os.path.join(ess_dir, "docs")
+            docs = os.path.join(ess_dir, "regulations")
             has_files = os.path.isdir(docs) and any(
                 os.path.isfile(os.path.join(docs, n)) for n in os.listdir(docs)
             )
@@ -193,11 +193,14 @@ def ess_converted_dir(user_id: str | None = None) -> str:
 
 
 def ess_docs_dir(user_id: str | None = None) -> str:
-    """``{SESSION_STORAGE}/{user}/ess/docs`` (legacy: ``raw``)."""
+    """``{SESSION_STORAGE}/{user}/ess/regulations`` (legacy: ``docs``, ``raw``)."""
     ess = get_user_ess_dir(user_id)
-    docs = os.path.join(ess, "docs")
-    legacy = os.path.join(ess, "raw")
-    if not os.path.isdir(docs) and os.path.isdir(legacy):
+    docs = os.path.join(ess, "regulations")
+    legacy_docs = os.path.join(ess, "docs")
+    legacy_raw = os.path.join(ess, "raw")
+    if not os.path.isdir(docs) and (
+        os.path.isdir(legacy_docs) or os.path.isdir(legacy_raw)
+    ):
         try:
             _ensure_ess_on_path()
             from doc_list import migrate_raw_to_docs
@@ -218,7 +221,7 @@ def ess_out_dir(user_id: str | None = None) -> str:
 
 
 def ess_doc_list_path(user_id: str | None = None) -> str:
-    return os.path.join(get_user_ess_dir(user_id), "doc_list.json")
+    return os.path.join(get_user_ess_dir(user_id), "regulations_list.json")
 
 
 def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
@@ -249,12 +252,12 @@ def save_ess_doc_upload(
     *,
     user_id: str | None = None,
 ) -> dict[str, object]:
-    """Sanitize filename, write into ``{user}/ess/docs``, update doc_list."""
+    """Sanitize filename, write into ``{user}/ess/regulations``, update regulations_list."""
     if data is None or len(data) == 0:
         raise ValueError("저장할 파일이 없습니다.")
 
     ess = ensure_user_ess_dir(user_id)
-    docs = os.path.join(ess, "docs")
+    docs = os.path.join(ess, "regulations")
     os.makedirs(docs, exist_ok=True)
     dest, safe_name, original_name = _ess_docs_dest_path(docs, filename)
     overwritten = os.path.isfile(dest)
@@ -317,7 +320,7 @@ def save_ess_raw_upload(
 
 
 def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:
-    """List files currently under the user's ``ess/docs``."""
+    """List files currently under the user's ``ess/regulations``."""
     docs = ess_docs_dir(user_id)
     if not os.path.isdir(docs):
         return []
@@ -1601,7 +1604,7 @@ def materialize_session_upload_from_s3(
 
 
 # ---------------------------------------------------------------------------
-# ESS docs uploads (browser → S3 presigned PUT → materialize into ess/docs/)
+# ESS docs uploads (browser → S3 presigned PUT → materialize into ess/regulations/)
 # ---------------------------------------------------------------------------
 
 ESS_DOCS_S3_PREFIX = "session-uploads"
@@ -1679,7 +1682,7 @@ def materialize_ess_docs_from_s3(
     *,
     original_filename: str | None = None,
 ) -> dict | None:
-    """Download a staged ESS object into ``{user}/ess/docs/`` and update doc_list."""
+    """Download a staged ESS object into ``{user}/ess/regulations/`` and update regulations_list."""
     if not s3_bucket or not s3_key:
         return None
 
@@ -1697,7 +1700,7 @@ def materialize_ess_docs_from_s3(
         upsert_document = None  # type: ignore[assignment]
 
     ess = ensure_user_ess_dir(user_id)
-    docs = os.path.join(ess, "docs")
+    docs = os.path.join(ess, "regulations")
     os.makedirs(docs, exist_ok=True)
     dest_path = os.path.join(docs, safe_name)
     overwritten = os.path.isfile(dest_path)
@@ -1950,7 +1953,7 @@ def enrich_ess_documents_for_ui(
     *,
     publish_md: bool = True,
 ) -> list[dict]:
-    """Attach pdf/md view URLs for Document List UI.
+    """Attach pdf/md view URLs for Regulations UI.
 
     PDF: prefer CloudFront ``session-uploads/{user}/ess/{pdf}``; else API fallback.
     MD: copy+upload to ``artifacts/{project}/{user}/md/`` then expose CloudFront + viewer URL.

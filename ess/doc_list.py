@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""ESS document registry — ``{user}/ess/doc_list.json``.
+"""ESS document registry — ``{user}/ess/regulations_list.json``.
 
-Tracks documents under ``ess/docs/`` (filename, created_at, md path, …).
+Tracks documents under ``ess/regulations/`` (filename, created_at, md path, …).
 Call ``upsert_document`` on upload and ``mark_extracted`` / ``upsert_document``
 after Sync writes ``{stem}.md`` / ``{stem}.json``.
 
@@ -23,9 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DOC_LIST_NAME = "doc_list.json"
-DOCS_DIR_NAME = "docs"
-# Legacy folder name; migrated to ``docs`` on ensure/load.
+DOC_LIST_NAME = "regulations_list.json"
+DOCS_DIR_NAME = "regulations"
+# Legacy names; migrated to ``regulations`` / ``regulations_list.json`` on ensure/load.
+LEGACY_DOC_LIST_NAME = "doc_list.json"
+LEGACY_DOCS_DIR_NAME = "docs"
 LEGACY_RAW_DIR_NAME = "raw"
 
 _SOURCE_SUFFIXES = {
@@ -105,54 +107,99 @@ def doc_list_path(ess_root: str | Path) -> Path:
 
 
 def docs_dir(ess_root: str | Path) -> Path:
+    """Return ``{ess}/regulations`` (canonical regulations storage)."""
     return Path(ess_root) / DOCS_DIR_NAME
 
 
-def migrate_raw_to_docs(ess_root: str | Path) -> Path:
-    """Rename/merge legacy ``raw/`` → ``docs/`` if needed; return docs path."""
-    import shutil
+def _merge_legacy_dir_into(dest: Path, legacy: Path) -> bool:
+    """Merge *legacy* into *dest* and remove *legacy*. Returns True if anything moved."""
+    if not legacy.is_dir():
+        return False
+    renamed = False
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in list(legacy.iterdir()):
+        target = dest / item.name
+        if target.exists():
+            continue
+        try:
+            item.rename(target)
+            renamed = True
+        except OSError:
+            if item.is_file():
+                target.write_bytes(item.read_bytes())
+                renamed = True
+            elif item.is_dir():
+                shutil.copytree(item, target)
+                renamed = True
+    try:
+        if not any(legacy.iterdir()):
+            legacy.rmdir()
+        else:
+            shutil.rmtree(legacy, ignore_errors=True)
+    except OSError:
+        shutil.rmtree(legacy, ignore_errors=True)
+    return renamed
 
+
+def _migrate_legacy_doc_list(ess_root: Path) -> bool:
+    """Rename ``doc_list.json`` → ``regulations_list.json`` if needed."""
+    dest = ess_root / DOC_LIST_NAME
+    legacy = ess_root / LEGACY_DOC_LIST_NAME
+    if dest.is_file() or not legacy.is_file():
+        return False
+    try:
+        legacy.rename(dest)
+        return True
+    except OSError:
+        try:
+            dest.write_bytes(legacy.read_bytes())
+            legacy.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+
+
+def migrate_raw_to_docs(ess_root: str | Path) -> Path:
+    """Rename/merge legacy ``raw/`` / ``docs/`` → ``regulations/``; return path."""
     root = Path(ess_root)
     dest = root / DOCS_DIR_NAME
-    legacy = root / LEGACY_RAW_DIR_NAME
-    renamed = False
-
     dest.mkdir(parents=True, exist_ok=True)
 
-    if legacy.is_dir():
-        # Merge any leftover files from raw/ into docs/, then remove raw/.
-        for item in list(legacy.iterdir()):
-            target = dest / item.name
-            if target.exists():
-                continue
+    renamed = False
+    # Prefer renaming ``docs/`` wholesale when ``regulations/`` is empty.
+    legacy_docs = root / LEGACY_DOCS_DIR_NAME
+    if legacy_docs.is_dir() and legacy_docs.resolve() != dest.resolve():
+        if not any(dest.iterdir()):
             try:
-                item.rename(target)
+                legacy_docs.rename(dest)
                 renamed = True
             except OSError:
-                if item.is_file():
-                    target.write_bytes(item.read_bytes())
-                    renamed = True
-                elif item.is_dir():
-                    shutil.copytree(item, target)
-                    renamed = True
-        # Remove empty (or emptied) legacy dir.
-        try:
-            if not any(legacy.iterdir()):
-                legacy.rmdir()
-            else:
-                shutil.rmtree(legacy, ignore_errors=True)
-        except OSError:
-            shutil.rmtree(legacy, ignore_errors=True)
+                renamed = _merge_legacy_dir_into(dest, legacy_docs) or renamed
+        else:
+            renamed = _merge_legacy_dir_into(dest, legacy_docs) or renamed
 
-    needs_fixup = renamed
+    renamed = _merge_legacy_dir_into(dest, root / LEGACY_RAW_DIR_NAME) or renamed
+    list_renamed = _migrate_legacy_doc_list(root)
+
+    needs_fixup = renamed or list_renamed
     if not needs_fixup:
         for path in list(dest.glob("*.json"))[:20]:
             try:
-                if "/ess/raw/" in path.read_text(encoding="utf-8", errors="replace"):
+                text = path.read_text(encoding="utf-8", errors="replace")
+                if "/ess/raw/" in text or "/ess/docs/" in text:
                     needs_fixup = True
                     break
             except OSError:
                 continue
+        if not needs_fixup and (root / DOC_LIST_NAME).is_file():
+            try:
+                text = (root / DOC_LIST_NAME).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                if "/ess/raw/" in text or "/ess/docs/" in text:
+                    needs_fixup = True
+            except OSError:
+                pass
         pages_root = root / "out" / "converted" / ".pdf_pages"
         if not needs_fixup and pages_root.is_dir():
             for work in pages_root.iterdir():
@@ -160,7 +207,8 @@ def migrate_raw_to_docs(ess_root: str | Path) -> Path:
                 if not marker.is_file():
                     continue
                 try:
-                    if "/ess/raw/" in marker.read_text(encoding="utf-8", errors="replace"):
+                    text = marker.read_text(encoding="utf-8", errors="replace")
+                    if "/ess/raw/" in text or "/ess/docs/" in text:
                         needs_fixup = True
                         break
                 except OSError:
@@ -172,11 +220,13 @@ def migrate_raw_to_docs(ess_root: str | Path) -> Path:
 
 
 def _fixup_paths_after_raw_migration(ess_root: Path) -> None:
-    """Rewrite absolute ``.../ess/raw/...`` paths to ``.../ess/docs/...``."""
-    import hashlib
+    """Rewrite ``.../ess/raw/...`` and ``.../ess/docs/...`` → ``.../ess/regulations/...``."""
 
     def _rewrite(text: str) -> str:
-        return text.replace("/ess/raw/", "/ess/docs/")
+        return (
+            text.replace("/ess/raw/", "/ess/regulations/")
+            .replace("/ess/docs/", "/ess/regulations/")
+        )
 
     docs = ess_root / DOCS_DIR_NAME
     if docs.is_dir():
@@ -195,10 +245,21 @@ def _fixup_paths_after_raw_migration(ess_root: Path) -> None:
                 continue
             # Only rewrite YAML/header paths; keep body intact if huge.
             head, sep, tail = raw.partition("\n---\n")
-            if sep and "/ess/raw/" in head:
+            if sep and ("/ess/raw/" in head or "/ess/docs/" in head):
                 path.write_text(_rewrite(head) + sep + tail, encoding="utf-8")
-            elif "/ess/raw/" in raw[:500]:
+            elif "/ess/raw/" in raw[:500] or "/ess/docs/" in raw[:500]:
                 path.write_text(_rewrite(raw), encoding="utf-8")
+
+    list_path = ess_root / DOC_LIST_NAME
+    if list_path.is_file():
+        try:
+            raw = list_path.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+        if raw:
+            new = _rewrite(raw)
+            if new != raw:
+                list_path.write_text(new, encoding="utf-8")
 
     pages_root = ess_root / "out" / "converted" / ".pdf_pages"
     if not pages_root.is_dir():
@@ -331,7 +392,7 @@ def upsert_document(
     user_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert or update one document entry; persist ``doc_list.json``."""
+    """Insert or update one document entry; persist ``regulations_list.json``."""
     root = Path(ess_root)
     migrate_raw_to_docs(root)
     data = load_doc_list(root)
@@ -450,7 +511,7 @@ def remove_document(
     filename: str | None = None,
     source_path: str | None = None,
 ) -> bool:
-    """Remove one entry from ``doc_list.json``. Returns True if removed."""
+    """Remove one entry from ``regulations_list.json``. Returns True if removed."""
     root = Path(ess_root)
     data = load_doc_list(root)
     documents: list[Any] = list(data.get("documents") or [])
@@ -484,7 +545,7 @@ def rebuild_doc_list(
     *,
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Rescan ``docs/`` and rewrite ``doc_list.json`` from source files."""
+    """Rescan ``regulations/`` and rewrite ``regulations_list.json`` from source files."""
     root = Path(ess_root)
     docs_path = migrate_raw_to_docs(root)
     previous = {
@@ -561,7 +622,7 @@ def rebuild_doc_list(
 
 
 def sanitize_existing_docs_filenames(ess_root: str | Path) -> list[dict[str, str]]:
-    """Rename unsanitized files under ``docs/`` (and matching sidecars / FMP paths).
+    """Rename unsanitized files under ``regulations/`` (and matching sidecars / FMP paths).
 
     Returns a list of ``{from, to}`` renames for source files.
     """
@@ -702,7 +763,7 @@ def sync_doc_list_with_filesystem(
     *,
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Ensure ``docs/`` exists, migrate legacy ``raw/``, sanitize names, rebuild."""
+    """Ensure ``regulations/`` exists, migrate legacy folders, sanitize names, rebuild."""
     migrate_raw_to_docs(ess_root)
     sanitize_existing_docs_filenames(ess_root)
     return rebuild_doc_list(ess_root, user_id=user_id)
@@ -711,17 +772,19 @@ def sync_doc_list_with_filesystem(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Manage ESS doc_list.json")
+    parser = argparse.ArgumentParser(description="Manage ESS regulations_list.json")
     parser.add_argument(
         "--ess-root",
         required=True,
         help="Path to .session_storage/{user}/ess",
     )
-    parser.add_argument("--user", default=None, help="User id to store in doc_list")
+    parser.add_argument(
+        "--user", default=None, help="User id to store in regulations_list"
+    )
     parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Rescan docs/ and rewrite doc_list.json",
+        help="Rescan regulations/ and rewrite regulations_list.json",
     )
     args = parser.parse_args()
     root = Path(args.ess_root).expanduser().resolve()

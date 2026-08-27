@@ -86,7 +86,7 @@ if os.path.isdir(_WEB_DIST):
                 return FileResponse(file_path)
         index_path = os.path.join(_WEB_DIST, "index.html")
         if os.path.isfile(index_path):
-            # Avoid stale SPA shells that still call legacy multipart /api/ess/docs.
+            # Avoid stale SPA shells that still call legacy multipart /api/ess/docs (or /raw).
             return FileResponse(
                 index_path,
                 headers={

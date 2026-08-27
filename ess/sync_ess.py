@@ -8,8 +8,8 @@ Mirrors the document staging path from ``agent-wiki/graph/sync_wiki.py``:
 Working tree (per user)::
 
     .session_storage/{user}/ess/
-      docs/                 uploaded sources + extracted ``{stem}.md`` / ``{stem}.json``
-      doc_list.json         document registry (filename, created_at, md path, …)
+      regulations/          uploaded sources + extracted ``{stem}.md`` / ``{stem}.json``
+      regulations_list.json document registry (filename, created_at, md path, …)
       out/
         converted/          FMP intermediates (``.pdf_pages`` only)
         manifest.json
@@ -742,7 +742,7 @@ def sync_user(
         return 0
 
     if not files and not incomplete:
-        print("No files in ess/docs. Nothing to update.")
+        print("No files in ess/regulations. Nothing to update.")
         fp_path.write_text(fp + "\n", encoding="utf-8")
         sync_doc_list_with_filesystem(ess_root, user_id=user_id)
         return 0
@@ -926,7 +926,7 @@ def sync_user(
         "docs_dir": str(docs_dir),
         "raw_dir": str(docs_dir),  # backward-compatible
         "converted_dir": str(converted),
-        "doc_list": str(ess_root / "doc_list.json"),
+        "doc_list": str(ess_root / "regulations_list.json"),
         "doc_count": len(doc_list.get("documents") or []),
         "package": str(_project_root() / "ess"),
         "staged_this_run": len(path_map),
@@ -960,7 +960,7 @@ def sync_user(
                 "session_ess_dir": str(ess_root),
                 "docs_dir": str(docs_dir),
                 "converted_dir": str(converted),
-                "doc_list": str(ess_root / "doc_list.json"),
+                "doc_list": str(ess_root / "regulations_list.json"),
             },
             ensure_ascii=False,
             indent=2,

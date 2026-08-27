@@ -5,7 +5,7 @@ description: >
   열: 규격명, 항목, 원문, 기준, 판정결과(합격/불합격/부분합격 선택), 비고.
   결과 파일은 S3 `artifacts/{project}/{user}/tc/`에 업로드하고 CloudFront URL을 반환한다.
   트리거: testcase-generator, 테스트케이스, test case, 엑셀 체크리스트,
-  ESS Document List에서 복사한 md 경로로 TC 생성, NFPA/UL 규격 합격불합격 표.
+  ESS Regulations에서 복사한 md 경로로 TC 생성, NFPA/UL 규격 합격불합격 표.
 ---
 
 # testcase-generator
@@ -28,11 +28,11 @@ Markdown 규격 문서에서 **검증 가능한 요구사항**을 추출해 Exce
 ### 1. 입력 확인
 
 사용자가 준 **markdown 파일 절대/상대 경로**를 확인한다.
-(ESS Document List의 **복사**로 얻은 `md_path`를 그대로 써도 된다.)
+(ESS Regulations의 **복사**로 얻은 `md_path`를 그대로 써도 된다.)
 
 ```bash
 # 예
-/Users/.../.session_storage/ksdyb/ess/docs/NFPA855_2023.md
+/Users/.../.session_storage/ksdyb/ess/regulations/NFPA855_2023.md
 ```
 
 파일이 없으면 중단하고 경로를 확인한다.
@@ -141,8 +141,8 @@ python skills/testcase-generator/scripts/generate_testcase_xlsx.py \
 ## 예시
 
 사용자:  
-`/…/ess/docs/NFPA855_2023.md 경로로 테스트케이스 엑셀 만들어줘`  
-(또는 Document List에서 **복사**한 경로를 붙여 넣음)
+`/…/ess/regulations/NFPA855_2023.md 경로로 테스트케이스 엑셀 만들어줘`  
+(또는 Regulations에서 **복사**한 경로를 붙여 넣음)
 
 에이전트:
 

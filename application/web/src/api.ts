@@ -254,7 +254,7 @@ export const api = {
     // Presigned PUT: browser → S3 directly (avoids ECS/ALB ~80MB body limits).
     uiLog("ess:upload start", { name: file.name, size: file.size });
 
-    const presign = await request<EssDocsPresignResult>("/api/ess/docs/presign", {
+    const presign = await request<EssDocsPresignResult>("/api/ess/regulations/presign", {
       method: "POST",
       body: JSON.stringify({
         file_name: file.name,
@@ -315,7 +315,7 @@ export const api = {
       );
     }
 
-    const data = await request<EssRawUploadResult>("/api/ess/docs/complete", {
+    const data = await request<EssRawUploadResult>("/api/ess/regulations/complete", {
       method: "POST",
       body: JSON.stringify({
         file_name: presign.file_name,

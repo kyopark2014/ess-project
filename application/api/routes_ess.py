@@ -51,7 +51,7 @@ def _load_doc_list_payload(user_id: str, *, enrich: bool = False) -> dict:
                 documents, user_id=user_id, publish_md=True
             )
         return {
-            "doc_list": str(Path(ess) / "doc_list.json"),
+            "doc_list": str(Path(ess) / "regulations_list.json"),
             "documents": documents,
             "doc_count": len(data.get("documents") or []),
             "doc_list_updated_at": data.get("updated_at"),
@@ -329,8 +329,8 @@ def get_ess_document_markdown_viewer(filename: str, request: Request):
     return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
 
 
-@router.post("/docs/presign")
-def ess_docs_presign(body: EssDocsPresignRequest, request: Request) -> dict:
+@router.post("/regulations/presign")
+def ess_regulations_presign(body: EssDocsPresignRequest, request: Request) -> dict:
     """Return a short-lived S3 PUT URL (browser → S3, bypasses API body limits)."""
     user_id = require_user_id(request)
     utils.ensure_user_ess_dir(user_id)
@@ -361,9 +361,9 @@ def ess_docs_presign(body: EssDocsPresignRequest, request: Request) -> dict:
     }
 
 
-@router.post("/docs/complete")
-def ess_docs_complete(body: EssDocsCompleteRequest, request: Request) -> dict:
-    """Confirm a presigned PUT and materialize the object into ``ess/docs/``."""
+@router.post("/regulations/complete")
+def ess_regulations_complete(body: EssDocsCompleteRequest, request: Request) -> dict:
+    """Confirm a presigned PUT and materialize the object into ``ess/regulations/``."""
     user_id = require_user_id(request)
     utils.ensure_user_ess_dir(user_id)
     _assert_ess_doc_size(body.size)
@@ -404,7 +404,7 @@ def ess_docs_complete(body: EssDocsCompleteRequest, request: Request) -> dict:
     )
     if not result:
         raise HTTPException(
-            status_code=500, detail="Failed to save file to ess/docs"
+            status_code=500, detail="Failed to save file to ess/regulations"
         )
 
     return {
@@ -466,12 +466,33 @@ async def _upload_ess_doc_multipart(request: Request, file: UploadFile) -> dict:
     }
 
 
+@router.post("/regulations")
+async def upload_ess_regulation_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict:
+    """Legacy multipart path — the UI uses ``/regulations/presign`` + ``/regulations/complete``."""
+    return await _upload_ess_doc_multipart(request, file)
+
+
+@router.post("/docs/presign")
+def ess_docs_presign_legacy(body: EssDocsPresignRequest, request: Request) -> dict:
+    """Deprecated alias for ``POST /api/ess/regulations/presign``."""
+    return ess_regulations_presign(body, request)
+
+
+@router.post("/docs/complete")
+def ess_docs_complete_legacy(body: EssDocsCompleteRequest, request: Request) -> dict:
+    """Deprecated alias for ``POST /api/ess/regulations/complete``."""
+    return ess_regulations_complete(body, request)
+
+
 @router.post("/docs")
 async def upload_ess_doc_file(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
-    """Legacy multipart path — the UI uses ``/docs/presign`` + ``/docs/complete``."""
+    """Deprecated alias for ``POST /api/ess/regulations``."""
     return await _upload_ess_doc_multipart(request, file)
 
 
@@ -480,7 +501,7 @@ async def upload_ess_raw_file(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict:
-    """Deprecated alias for ``POST /api/ess/docs``."""
+    """Deprecated alias for ``POST /api/ess/regulations``."""
     return await _upload_ess_doc_multipart(request, file)
 
 

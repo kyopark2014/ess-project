@@ -108,7 +108,7 @@ export function ChatInput({
     onDrop,
   } = useFileUpload({ disabled });
 
-  // Document List 「복사」 → attach md chip immediately (no Load files step required).
+  // Regulations 「복사」 → attach md chip immediately (no Load files step required).
   useEffect(() => {
     function onEssAttachFile(e: Event) {
       const detail = (e as CustomEvent<LoadedFile>).detail;
@@ -245,7 +245,7 @@ export function ChatInput({
   function openLoadFiles() {
     setMenuOpen(false);
     clearUploadError();
-    // Document List 「복사」로 스테이징된 md 경로는 파일 선택 없이 바로 첨부.
+    // Regulations 「복사」로 스테이징된 md 경로는 파일 선택 없이 바로 첨부.
     const pending = consumePendingLoadFile();
     if (pending) {
       attachExistingFile(pending);
