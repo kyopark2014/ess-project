@@ -67,7 +67,7 @@ Amazon Bedrock의 Knowledge Base에 접속하면, 아래와 같이 "Hierarchical
 
 동기화(Sync)가 완료되면 아래와 같이 Setting/MCP에서 knowledge base를 선택합니다.
 
-<img width="256" height="324" alt="image" src="https://github.com/user-attachments/assets/22ee7896-3c39-49ff-b6fc-c2a721d8880f" />
+<img width="231" height="306" alt="image" src="https://github.com/user-attachments/assets/daddca4b-6194-4255-b70b-e7cd4413306f" />
 
 이후 아래와 같이 "위험저감분석(HMA)을 작성하는 방법을 설명하세요."라고 입력하면 RAG를 조회하여 아래와 같은 정보를 얻습니다. 
 
