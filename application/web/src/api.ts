@@ -154,6 +154,15 @@ export interface EssDocument {
   md_url?: string | null;
   md_viewer_url?: string | null;
   md_published?: boolean;
+  title?: string;
+  standard?: string;
+  rows?: number;
+  json_path?: string;
+  xlsx_available?: boolean;
+  xlsx_api_url?: string | null;
+  json_available?: boolean;
+  json_viewer_url?: string | null;
+  kind?: string;
 }
 
 export interface EssDocListResult {
@@ -249,6 +258,8 @@ export const api = {
     request<EssDocListResult>(
       `/api/ess/project-list${publishMd ? "" : "?publish_md=0"}`,
     ),
+  getEssTestCaseList: () =>
+    request<EssDocListResult>("/api/ess/test-case-list"),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",

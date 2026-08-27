@@ -64,7 +64,6 @@ vector_index_name = project_name
 ### 3. Secrets Manager
 공유 시크릿(프로젝트명 접미사 없음). 이미 있으면 재사용합니다.
 - `openweathermap`: Weather API 키
-- `tavilyapikey`: Tavily API 키
 - `notionapikey`: Notion API 키
 - `telegramapikey`: Telegram Bot API 키
 - `discordapikey`: Discord Bot API 키

@@ -549,13 +549,25 @@ def upload_file_to_s3(filepath: str) -> str:
         content_type = utils.get_contents_type(s3_key)
         s3 = boto3.client("s3", region_name=config.get("region", "us-west-2"))
 
+        # CloudFront CachingOptimized: without Cache-Control, same-key updates
+        # can be served from edge for up to ~24h. Force revalidation.
         with open(full_path, "rb") as f:
-            s3.put_object(Bucket=s3_bucket, Key=s3_key, Body=f.read(), ContentType=content_type)
+            body = f.read()
+        put_kwargs = {
+            "Bucket": s3_bucket,
+            "Key": s3_key,
+            "Body": body,
+            "CacheControl": "no-cache, max-age=0, must-revalidate",
+        }
+        if content_type and content_type != "no info":
+            put_kwargs["ContentType"] = content_type
+
+        s3.put_object(**put_kwargs)
 
         if sharing_url:
-            url = f"{sharing_url}/{url_parse.quote(s3_key)}"
+            url = f"{sharing_url.rstrip('/')}/{url_parse.quote(s3_key)}"
             return f"Upload complete: {url}"
-        return f"Upload complete: {chat.s3_uri_to_console_url(f"s3://{s3_bucket}/{s3_key}", config.get("region", "us-west-2"))}"
+        return f"Upload complete: {chat.s3_uri_to_console_url(f's3://{s3_bucket}/{s3_key}', config.get('region', 'us-west-2'))}"
 
     except Exception as e:
         return f"Upload failed: {str(e)}"

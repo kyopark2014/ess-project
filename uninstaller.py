@@ -563,7 +563,6 @@ def delete_agentcore_websearch_gateway(skip_confirmation: bool = False) -> bool:
 # Shared across projects (no project_name suffix)
 SHARED_API_SECRETS = [
     "openweathermap",
-    "tavilyapikey",
     "notionapikey",
     "telegramapikey",
     "discordapikey",
@@ -574,7 +573,7 @@ SHARED_API_SECRETS = [
 def delete_secrets(delete_shared: bool = False):
     """Delete Secrets Manager secrets.
 
-    Shared API secrets (tavily/notion/...) are only deleted when delete_shared is True.
+    Shared API secrets (notion/...) are only deleted when delete_shared is True.
     """
     logger.info("[4/6] Deleting secrets")
 
@@ -726,7 +725,7 @@ def main():
     parser.add_argument(
         "--delete-shared-secrets",
         action="store_true",
-        help="Also delete shared API secrets (tavilyapikey, notionapikey, ...)",
+        help="Also delete shared API secrets (notionapikey, ...)",
     )
     args = parser.parse_args()
 
@@ -764,7 +763,7 @@ def main():
     delete_cloudfront = resolve(args.delete_cloudfront, f"Delete shared CloudFront distribution ({cloudfront_comment})?")
     delete_shared_secrets = resolve(
         args.delete_shared_secrets,
-        "Delete shared API secrets (openweathermap, tavilyapikey, notionapikey, telegramapikey, discordapikey, slackapikey)?",
+        "Delete shared API secrets (openweathermap, notionapikey, telegramapikey, discordapikey, slackapikey)?",
     )
 
     start_time = time.time()

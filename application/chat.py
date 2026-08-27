@@ -951,7 +951,8 @@ def upload_to_s3(file_bytes, file_name):
             Key=s3_key, 
             ContentType=content_type,
             Metadata = user_meta,
-            Body=file_bytes            
+            Body=file_bytes,
+            CacheControl="no-cache, max-age=0, must-revalidate",
         )
         logger.info(f"upload response: {response}")
 
@@ -2225,8 +2226,6 @@ def append_tool_guidance_to_prompt(system_prompt: str, mcp_servers: list) -> str
         extras.append(skill.KNOWLEDGE_BASE_RETRIEVE_GUIDANCE)
 
     parallel_tools: list[str] = []
-    if "tavily" in selected:
-        parallel_tools.append("tavily_web_search")
     if "websearch" in selected:
         parallel_tools.append("websearch")
     if "knowledge base" in selected:

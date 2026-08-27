@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""ESS document registry — regulations + projects lists.
+"""ESS document registry — regulations + projects + test cases lists.
 
-Tracks documents under ``ess/regulations/`` (``regulations_list.json``) and
-``ess/projects/`` (``project_list.json``). Call ``upsert_document`` on upload
-and ``mark_extracted`` / ``upsert_document`` after Sync writes
+Tracks documents under ``ess/regulations/`` (``regulations_list.json``),
+``ess/projects/`` (``project_list.json``), and ``ess/test_cases/``
+(``test_cases_list.json``). Call ``upsert_document`` on upload and
+``mark_extracted`` / ``upsert_document`` after Sync writes
 ``{stem}.md`` / ``{stem}.json``.
 
 Usage:
-    from doc_list import upsert_document, load_doc_list, rebuild_doc_list, PROJECTS
+    from doc_list import upsert_document, load_doc_list, rebuild_doc_list, PROJECTS, TEST_CASES
 
     upsert_document(ess_root, filename="a.pdf", source_path=...)
     upsert_document(ess_root, filename="b.pdf", source_path=..., registry=PROJECTS)
+    upsert_document(ess_root, filename="tc.xlsx", source_path=..., registry=TEST_CASES)
     mark_extracted(ess_root, source_path=..., md_path=..., json_path=...)
 """
 
@@ -30,6 +32,8 @@ DOC_LIST_NAME = "regulations_list.json"
 DOCS_DIR_NAME = "regulations"
 PROJECT_LIST_NAME = "project_list.json"
 PROJECTS_DIR_NAME = "projects"
+TEST_CASE_LIST_NAME = "test_cases_list.json"
+TEST_CASES_DIR_NAME = "test_cases"
 # Legacy names; migrated to ``regulations`` / ``regulations_list.json`` on ensure/load.
 LEGACY_DOC_LIST_NAME = "doc_list.json"
 LEGACY_DOCS_DIR_NAME = "docs"
@@ -46,6 +50,7 @@ class DocRegistry:
 
 REGULATIONS = DocRegistry(DOC_LIST_NAME, DOCS_DIR_NAME)
 PROJECTS = DocRegistry(PROJECT_LIST_NAME, PROJECTS_DIR_NAME)
+TEST_CASES = DocRegistry(TEST_CASE_LIST_NAME, TEST_CASES_DIR_NAME)
 DEFAULT_REGISTRY = REGULATIONS
 
 _SOURCE_SUFFIXES = {
@@ -55,6 +60,10 @@ _SOURCE_SUFFIXES = {
     ".text",
     ".rst",
     ".markdown",
+}
+# Primary artifacts for test-case registry (``.json`` cases file is a sidecar).
+_TEST_CASE_SOURCE_SUFFIXES = {
+    ".xlsx",
 }
 
 # Keep letters/digits/._- ; collapse everything else (spaces, unicode punct, …).
@@ -131,8 +140,14 @@ def docs_dir(
     ess_root: str | Path,
     registry: DocRegistry = DEFAULT_REGISTRY,
 ) -> Path:
-    """Return ``{ess}/regulations`` or ``{ess}/projects`` for *registry*."""
+    """Return ``{ess}/regulations``, ``{ess}/projects``, or ``{ess}/test_cases``."""
     return Path(ess_root) / registry.dir_name
+
+
+def _source_suffixes_for(registry: DocRegistry) -> set[str]:
+    if registry is TEST_CASES:
+        return _TEST_CASE_SOURCE_SUFFIXES
+    return _SOURCE_SUFFIXES
 
 
 def resolve_registry(
@@ -141,7 +156,7 @@ def resolve_registry(
     source_path: str | None = None,
     registry: DocRegistry | None = None,
 ) -> DocRegistry:
-    """Pick regulations vs projects from an explicit registry or source path."""
+    """Pick regulations / projects / test_cases from registry or source path."""
     if registry is not None:
         return registry
     if not source_path:
@@ -151,12 +166,14 @@ def resolve_registry(
         src = Path(source_path).resolve()
     except OSError:
         src = Path(source_path)
-    projects = (root / PROJECTS.dir_name).resolve()
-    try:
-        src.relative_to(projects)
-        return PROJECTS
-    except ValueError:
-        return DEFAULT_REGISTRY
+    for cand in (TEST_CASES, PROJECTS):
+        folder = (root / cand.dir_name).resolve()
+        try:
+            src.relative_to(folder)
+            return cand
+        except ValueError:
+            continue
+    return DEFAULT_REGISTRY
 
 
 def _merge_legacy_dir_into(dest: Path, legacy: Path) -> bool:
@@ -594,9 +611,18 @@ def remove_document(
     return True
 
 
-def _is_sidecar(path: Path, docs_path: Path) -> bool:
+def _is_sidecar(
+    path: Path,
+    docs_path: Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> bool:
     suf = path.suffix.lower()
     stem = path.stem
+    if registry is TEST_CASES:
+        # ``{stem}.json`` next to ``{stem}.xlsx`` is the cases sidecar.
+        if suf == ".json":
+            return (docs_path / f"{stem}.xlsx").is_file()
+        return False
     if suf == ".json":
         for ext in _SOURCE_SUFFIXES - {".md"}:
             if (docs_path / f"{stem}{ext}").is_file():
@@ -633,14 +659,15 @@ def rebuild_doc_list(
         if orig and orig not in previous:
             previous[str(orig)] = d
 
+    source_suffixes = _source_suffixes_for(registry)
     documents: list[dict[str, Any]] = []
     if docs_path.is_dir():
         for path in sorted(docs_path.iterdir(), key=lambda p: p.name.lower()):
             if not path.is_file():
                 continue
-            if path.suffix.lower() not in _SOURCE_SUFFIXES:
+            if path.suffix.lower() not in source_suffixes:
                 continue
-            if _is_sidecar(path, docs_path):
+            if _is_sidecar(path, docs_path, registry):
                 continue
             stem = path.stem
             md = docs_path / f"{stem}.md"
@@ -669,23 +696,35 @@ def rebuild_doc_list(
                 or prev.get("filename")
                 or path.name
             )
-            documents.append(
-                {
-                    "filename": path.name,
-                    "original_filename": original,
-                    "sanitized": sanitize_ess_filename(str(original)) != str(original)
-                    or str(original) != path.name,
-                    "created_at": created,
-                    "updated_at": _now_iso(),
-                    "source_path": str(path.resolve()),
-                    "md_path": md_path,
-                    "md_file": os.path.basename(md_path) if md_path else None,
-                    "json_path": json_p,
-                    "bytes": size,
-                    "suffix": path.suffix.lower(),
-                    "status": "extracted" if md_path and Path(md_path).is_file() else "uploaded",
-                }
-            )
+            if registry is TEST_CASES:
+                status = "saved"
+            else:
+                status = (
+                    "extracted"
+                    if md_path and Path(md_path).is_file()
+                    else "uploaded"
+                )
+            entry: dict[str, Any] = {
+                "filename": path.name,
+                "original_filename": original,
+                "sanitized": sanitize_ess_filename(str(original)) != str(original)
+                or str(original) != path.name,
+                "created_at": created,
+                "updated_at": _now_iso(),
+                "source_path": str(path.resolve()),
+                "md_path": md_path,
+                "md_file": os.path.basename(md_path) if md_path else None,
+                "json_path": json_p,
+                "bytes": size,
+                "suffix": path.suffix.lower(),
+                "status": status,
+            }
+            # Preserve test-case metadata from prior list entries.
+            if registry is TEST_CASES:
+                for key in ("title", "standard", "source_md", "rows"):
+                    if prev.get(key) is not None:
+                        entry[key] = prev[key]
+            documents.append(entry)
 
     data = {
         "user_id": user_id
@@ -713,8 +752,9 @@ def sanitize_existing_docs_filenames(
         docs_path = docs_dir(root, registry)
         docs_path.mkdir(parents=True, exist_ok=True)
     renames: list[dict[str, str]] = []
+    source_suffixes = _source_suffixes_for(registry)
 
-    # Group by current stem so pdf/md/json move together.
+    # Group by current stem so pdf/md/json (or xlsx/json) move together.
     by_stem: dict[str, list[Path]] = {}
     if not docs_path.is_dir():
         return renames
@@ -728,7 +768,9 @@ def sanitize_existing_docs_filenames(
         # Prefer sanitizing from a source file name if present.
         source = None
         for p in paths:
-            if p.suffix.lower() in _SOURCE_SUFFIXES and not _is_sidecar(p, docs_path):
+            if p.suffix.lower() in source_suffixes and not _is_sidecar(
+                p, docs_path, registry
+            ):
                 source = p
                 break
         sample = source or paths[0]
@@ -783,6 +825,7 @@ def sanitize_existing_docs_filenames(
                 ".text",
                 ".rst",
                 ".markdown",
+                ".xlsx",
             } or (
                 dest.suffix.lower() == ".md"
                 and not any(
@@ -872,13 +915,16 @@ def sync_all_doc_lists(
     *,
     user_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Rebuild both ``regulations_list.json`` and ``project_list.json``."""
+    """Rebuild regulations / projects / test_cases list JSON files."""
     return {
         "regulations": sync_doc_list_with_filesystem(
             ess_root, user_id=user_id, registry=REGULATIONS
         ),
         "projects": sync_doc_list_with_filesystem(
             ess_root, user_id=user_id, registry=PROJECTS
+        ),
+        "test_cases": sync_doc_list_with_filesystem(
+            ess_root, user_id=user_id, registry=TEST_CASES
         ),
     }
 

@@ -5,8 +5,8 @@ import { copyDocumentForChat } from "../pendingLoadFile";
 
 interface Props {
   onClose: () => void;
-  /** ``regulation`` → regulations_list.json, ``project`` → project_list.json */
-  kind?: "regulation" | "project";
+  /** ``regulation`` → regulations_list.json, ``project`` → project_list.json, ``test_case`` → test_cases_list.json */
+  kind?: "regulation" | "project" | "test_case";
 }
 
 function formatBytes(bytes: number | undefined): string {
@@ -34,15 +34,29 @@ function markdownFileName(doc: EssDocument): string | null {
   return null;
 }
 
+function testCaseCopyPath(doc: EssDocument): string | null {
+  const json = (doc.json_path || "").trim();
+  if (json) return json;
+  const src = (doc.source_path || "").trim();
+  return src || null;
+}
+
 export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
   const [documents, setDocuments] = useState<EssDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const title = kind === "project" ? "Projects" : "Regulations";
+  const title =
+    kind === "project"
+      ? "Projects"
+      : kind === "test_case"
+        ? "Test Cases"
+        : "Regulations";
   const emptyHint =
     kind === "project"
       ? "등록된 Project 문서가 없습니다. Configure에서 Project 문서를 추가한 뒤 Sync 하세요."
-      : "등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.";
+      : kind === "test_case"
+        ? "등록된 Test Case가 없습니다. testcase-generator 스킬로 생성·저장하세요."
+        : "등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.";
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +67,9 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
         const data =
           kind === "project"
             ? await api.getEssProjectList(true)
-            : await api.getEssDocList(true);
+            : kind === "test_case"
+              ? await api.getEssTestCaseList()
+              : await api.getEssDocList(true);
         if (cancelled) return;
         setDocuments(data.documents ?? []);
       } catch (err) {
@@ -90,6 +106,18 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
     openInNewTab(url);
   }
 
+  function openJson(doc: EssDocument) {
+    const url = doc.json_viewer_url;
+    if (!url) return;
+    openInNewTab(url);
+  }
+
+  function openXlsx(doc: EssDocument) {
+    const url = doc.xlsx_api_url;
+    if (!url) return;
+    openInNewTab(url);
+  }
+
   async function copyMarkdownPath(doc: EssDocument) {
     const url = markdownCopyUrl(doc);
     if (!url) return;
@@ -103,6 +131,24 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
     });
     try {
       await navigator.clipboard.writeText(url);
+    } catch {
+      // Clipboard is optional; chat attachment still works via event.
+    }
+    onClose();
+  }
+
+  async function copyTestCasePath(doc: EssDocument) {
+    const path = testCaseCopyPath(doc);
+    if (!path) return;
+    const name = path.split("/").pop() || path;
+    const size = Number(doc.bytes);
+    copyDocumentForChat({
+      path,
+      name,
+      size: Number.isFinite(size) && size > 0 ? size : 0,
+    });
+    try {
+      await navigator.clipboard.writeText(path);
     } catch {
       // Clipboard is optional; chat attachment still works via event.
     }
@@ -135,21 +181,96 @@ export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
           <ul className="ess-doc-list">
             {documents.map((doc) => {
               const key = doc.filename || doc.md_file || doc.display_name || "doc";
-              const title =
+              const itemTitle =
                 doc.display_name ||
+                doc.title ||
                 doc.original_filename ||
                 doc.filename ||
                 doc.md_file ||
                 "document";
+              if (kind === "test_case") {
+                const canJson = Boolean(
+                  doc.json_available && doc.json_viewer_url,
+                );
+                const canXlsx = Boolean(doc.xlsx_available && doc.xlsx_api_url);
+                const copyPath = testCaseCopyPath(doc);
+                const canCopy = Boolean(copyPath);
+                const rows =
+                  typeof doc.rows === "number" && Number.isFinite(doc.rows)
+                    ? `${doc.rows} rows`
+                    : null;
+                const subParts = [
+                  doc.standard || null,
+                  doc.status || "—",
+                  rows,
+                  formatBytes(doc.bytes),
+                ].filter(Boolean);
+                return (
+                  <li key={key} className="ess-doc-list-item">
+                    <div className="ess-doc-list-meta">
+                      <span className="ess-doc-list-name" title={itemTitle}>
+                        {itemTitle}
+                      </span>
+                      <span className="ess-doc-list-sub">
+                        {subParts.join(" · ")}
+                      </span>
+                    </div>
+                    <div className="ess-doc-list-actions">
+                      <button
+                        type="button"
+                        className="ess-doc-list-btn"
+                        disabled={!canJson}
+                        title={
+                          canJson
+                            ? "JSON viewer (새 탭)"
+                            : "JSON sidecar 없음"
+                        }
+                        onClick={() => openJson(doc)}
+                      >
+                        JSON
+                      </button>
+                      <button
+                        type="button"
+                        className="ess-doc-list-btn"
+                        disabled={!canXlsx}
+                        title={
+                          canXlsx
+                            ? "Excel 다운로드"
+                            : "Excel 파일을 찾을 수 없습니다"
+                        }
+                        onClick={() => openXlsx(doc)}
+                      >
+                        Excel
+                      </button>
+                      <button
+                        type="button"
+                        className="ess-doc-list-btn"
+                        disabled={!canCopy}
+                        title={
+                          canCopy
+                            ? `입력창에 파일 첨부 + 경로 복사\n${copyPath}`
+                            : "첨부할 파일 경로가 없습니다"
+                        }
+                        onClick={() => void copyTestCasePath(doc)}
+                      >
+                        복사
+                      </button>
+                    </div>
+                  </li>
+                );
+              }
+
               const canMd = Boolean(doc.md_available && doc.md_viewer_url);
-              const canPdf = Boolean(doc.pdf_available && (doc.pdf_api_url || doc.pdf_url));
+              const canPdf = Boolean(
+                doc.pdf_available && (doc.pdf_api_url || doc.pdf_url),
+              );
               const mdCopyUrl = markdownCopyUrl(doc);
               const canCopy = Boolean(mdCopyUrl);
               return (
                 <li key={key} className="ess-doc-list-item">
                   <div className="ess-doc-list-meta">
-                    <span className="ess-doc-list-name" title={title}>
-                      {title}
+                    <span className="ess-doc-list-name" title={itemTitle}>
+                      {itemTitle}
                     </span>
                     <span className="ess-doc-list-sub">
                       {doc.status || "—"} · {formatBytes(doc.bytes)}

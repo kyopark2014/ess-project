@@ -98,6 +98,37 @@ def _load_project_list_payload(user_id: str, *, enrich: bool = False) -> dict:
         }
 
 
+def _load_test_case_list_payload(user_id: str, *, enrich: bool = False) -> dict:
+    try:
+        utils._ensure_ess_on_path()
+        from doc_list import TEST_CASES, load_doc_list, list_documents
+
+        ess = utils.get_user_ess_dir(user_id)
+        data = load_doc_list(ess, TEST_CASES)
+        documents = list_documents(ess, TEST_CASES)
+        if enrich:
+            documents = utils.enrich_ess_test_cases_for_ui(
+                documents, user_id=user_id
+            )
+        return {
+            "test_cases_list": str(Path(ess) / "test_cases_list.json"),
+            "doc_list": str(Path(ess) / "test_cases_list.json"),
+            "documents": documents,
+            "doc_count": len(data.get("documents") or []),
+            "doc_list_updated_at": data.get("updated_at"),
+            "sharing_url": utils.sharing_url or None,
+        }
+    except Exception:
+        return {
+            "test_cases_list": utils.ess_test_cases_list_path(user_id),
+            "doc_list": utils.ess_test_cases_list_path(user_id),
+            "documents": [],
+            "doc_count": 0,
+            "doc_list_updated_at": None,
+            "sharing_url": utils.sharing_url or None,
+        }
+
+
 def _safe_doc_name(name: str) -> str:
     cleaned = Path(unquote(name or "")).name.strip()
     if not cleaned or cleaned in {".", ".."}:
@@ -111,7 +142,9 @@ def _resolve_ess_doc_path(
     *,
     kind: str = "regulation",
 ) -> Path:
-    if kind == "project":
+    if kind == "test_case":
+        bases = [utils.ess_test_cases_dir(user_id)]
+    elif kind == "project":
         bases = [utils.ess_projects_dir(user_id), utils.ess_docs_dir(user_id)]
     else:
         bases = [utils.ess_docs_dir(user_id), utils.ess_projects_dir(user_id)]
@@ -261,6 +294,25 @@ def get_ess_project_list(
         "ess_dir": utils.get_user_ess_dir(user_id),
         "projects_dir": utils.ess_projects_dir(user_id),
         "docs_dir": utils.ess_projects_dir(user_id),
+        **payload,
+    }
+
+
+@router.get("/test-case-list")
+def get_ess_test_case_list(request: Request) -> dict:
+    """Return ESS test-case documents with xlsx/json view URLs (``test_cases_list.json``)."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    payload = _load_test_case_list_payload(user_id, enrich=False)
+    payload["documents"] = utils.enrich_ess_test_cases_for_ui(
+        payload.get("documents") or [],
+        user_id=user_id,
+    )
+    payload["doc_count"] = len(payload["documents"])
+    return {
+        "ess_dir": utils.get_user_ess_dir(user_id),
+        "test_cases_dir": utils.ess_test_cases_dir(user_id),
+        "docs_dir": utils.ess_test_cases_dir(user_id),
         **payload,
     }
 
@@ -416,6 +468,183 @@ def get_ess_document_markdown_viewer(
       el.innerHTML = marked.parse(source);
     }} catch (err) {{
       el.textContent = "Failed to render markdown: " + err;
+    }}
+  </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
+
+
+@router.get("/documents/{filename}/xlsx")
+def get_ess_document_xlsx(filename: str, request: Request):
+    """Download / open a test-case Excel workbook."""
+    user_id = require_user_id(request)
+    name = _safe_doc_name(filename)
+    stem = Path(name).stem
+    xlsx_name = name if name.lower().endswith(".xlsx") else f"{stem}.xlsx"
+    path = _resolve_ess_doc_path(user_id, xlsx_name, kind="test_case")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=xlsx_name,
+        headers={"Content-Disposition": f'attachment; filename="{xlsx_name}"'},
+    )
+
+
+@router.get("/documents/{filename}/json")
+def get_ess_document_json_viewer(filename: str, request: Request):
+    """HTML table viewer for a test-case JSON sidecar (new browser tab)."""
+    user_id = require_user_id(request)
+    name = _safe_doc_name(filename)
+    stem = Path(name).stem
+    json_name = name if name.lower().endswith(".json") else f"{stem}.json"
+    path = _resolve_ess_doc_path(user_id, json_name, kind="test_case")
+
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+    except json.JSONDecodeError:
+        data = None
+
+    title_raw = json_name
+    standard = ""
+    cases: list = []
+    if isinstance(data, dict):
+        title_raw = str(data.get("title") or title_raw)
+        standard = str(data.get("standard") or "")
+        raw_cases = data.get("cases")
+        if isinstance(raw_cases, list):
+            cases = [c for c in raw_cases if isinstance(c, dict)]
+    elif isinstance(data, list):
+        cases = [c for c in data if isinstance(c, dict)]
+
+    title = html.escape(title_raw)
+    std_html = html.escape(standard) if standard else ""
+    payload = json.dumps(cases, ensure_ascii=False)
+    meta = (
+        f'<span class="meta">{std_html} · {len(cases)} cases</span>'
+        if standard
+        else f'<span class="meta">{len(cases)} cases</span>'
+    )
+    page = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+    :root {{ color-scheme: light dark; }}
+    body {{
+      margin: 0;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }}
+    .topbar {{
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 20px;
+      border-bottom: 1px solid #30363d;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(8px);
+    }}
+    .topbar h1 {{
+      margin: 0; font-size: 14px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }}
+    .topbar .meta {{ color: #8b949e; font-size: 13px; white-space: nowrap; }}
+    .wrap {{
+      box-sizing: border-box;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px 16px 64px;
+      overflow-x: auto;
+    }}
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+    }}
+    th, td {{
+      border: 1px solid #30363d;
+      padding: 8px 10px;
+      vertical-align: top;
+      text-align: left;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    th {{
+      background: #161b22;
+      position: sticky; top: 42px;
+      z-index: 1;
+    }}
+    tr:nth-child(even) td {{ background: #11161d; }}
+    .empty {{ color: #8b949e; padding: 24px 0; }}
+    @media (prefers-color-scheme: light) {{
+      body {{ background: #ffffff; color: #1f2328; }}
+      .topbar {{ background: rgba(255,255,255,0.92); border-bottom-color: #d0d7de; }}
+      .topbar .meta {{ color: #656d76; }}
+      th, td {{ border-color: #d0d7de; }}
+      th {{ background: #f6f8fa; }}
+      tr:nth-child(even) td {{ background: #f6f8fa; }}
+      .empty {{ color: #656d76; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>{title}</h1>
+    {meta}
+  </div>
+  <div class="wrap">
+    <div id="content" class="empty">Loading…</div>
+  </div>
+  <script>
+    const cases = {payload};
+    const el = document.getElementById("content");
+    if (!Array.isArray(cases) || cases.length === 0) {{
+      el.textContent = "표시할 테스트케이스가 없습니다.";
+    }} else {{
+      const preferred = ["규격명", "항목", "원문", "기준", "판정결과", "비고"];
+      const keySet = new Set();
+      for (const row of cases) {{
+        Object.keys(row || {{}}).forEach((k) => keySet.add(k));
+      }}
+      const keys = [
+        ...preferred.filter((k) => keySet.has(k)),
+        ...[...keySet].filter((k) => !preferred.includes(k)),
+      ];
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const hr = document.createElement("tr");
+      for (const k of keys) {{
+        const th = document.createElement("th");
+        th.textContent = k;
+        hr.appendChild(th);
+      }}
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const row of cases) {{
+        const tr = document.createElement("tr");
+        for (const k of keys) {{
+          const td = document.createElement("td");
+          const v = row[k];
+          td.textContent = v == null ? "" : String(v);
+          tr.appendChild(td);
+        }}
+        tbody.appendChild(tr);
+      }}
+      table.appendChild(tbody);
+      el.className = "";
+      el.replaceChildren(table);
     }}
   </script>
 </body>

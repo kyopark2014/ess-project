@@ -6,7 +6,6 @@ import boto3
 import os
 from urllib import parse
 from botocore.exceptions import ClientError
-from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -157,6 +156,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
         "",
         "regulations",
         "projects",
+        "test_cases",
         "out",
         os.path.join("out", "converted"),
         os.path.join("out", "converted", ".pdf_pages"),
@@ -166,6 +166,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
         _ensure_ess_on_path()
         from doc_list import (
             PROJECTS,
+            TEST_CASES,
             doc_list_path,
             empty_doc_list,
             migrate_raw_to_docs,
@@ -195,6 +196,19 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
             else:
                 save_doc_list(
                     ess_dir, empty_doc_list(user_id=segment), registry=PROJECTS
+                )
+        if not doc_list_path(ess_dir, TEST_CASES).is_file():
+            test_cases = os.path.join(ess_dir, "test_cases")
+            has_tc = os.path.isdir(test_cases) and any(
+                os.path.isfile(os.path.join(test_cases, n)) for n in os.listdir(test_cases)
+            )
+            if has_tc:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=TEST_CASES
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=TEST_CASES
                 )
     except Exception:
         logger.debug("ess doc_list ensure skipped", exc_info=True)
@@ -246,6 +260,15 @@ def ess_projects_dir(user_id: str | None = None) -> str:
 
 def ess_project_list_path(user_id: str | None = None) -> str:
     return os.path.join(get_user_ess_dir(user_id), "project_list.json")
+
+
+def ess_test_cases_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/test_cases``."""
+    return os.path.join(get_user_ess_dir(user_id), "test_cases")
+
+
+def ess_test_cases_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "test_cases_list.json")
 
 
 def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
@@ -406,6 +429,140 @@ def save_ess_project_upload(
         "count": 1,
         "doc_list": ess_project_list_path(user_id),
         "project_list": ess_project_list_path(user_id),
+    }
+
+
+def save_ess_testcase(
+    xlsx_path: str,
+    *,
+    user_id: str | None = None,
+    cases_json_path: str | None = None,
+    title: str | None = None,
+    standard: str | None = None,
+    source_md: str | None = None,
+    rows: int | None = None,
+    filename: str | None = None,
+) -> dict[str, object]:
+    """Copy a generated test-case xlsx into ``{user}/ess/test_cases`` and update list.
+
+    Also copies optional cases JSON as ``{stem}.json`` sidecar and upserts
+    ``test_cases_list.json`` (same shape as ``project_list.json``).
+    """
+    src = os.path.abspath(os.path.expanduser(xlsx_path or ""))
+    if not src or not os.path.isfile(src):
+        raise ValueError(f"테스트케이스 파일이 없습니다: {xlsx_path}")
+
+    ess = ensure_user_ess_dir(user_id)
+    tc_dir = os.path.join(ess, "test_cases")
+    os.makedirs(tc_dir, exist_ok=True)
+
+    preferred = filename or os.path.basename(src)
+    dest, safe_name, original_name = _ess_docs_dest_path(tc_dir, preferred)
+    if not safe_name.lower().endswith(".xlsx"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.xlsx"
+        dest = os.path.join(tc_dir, safe_name)
+    overwritten = os.path.isfile(dest)
+
+    with open(src, "rb") as f:
+        data = f.read()
+    if not data:
+        raise ValueError("저장할 파일이 비어 있습니다.")
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    stem = os.path.splitext(safe_name)[0]
+    json_dest: str | None = None
+    meta_title = title
+    meta_standard = standard
+    meta_source_md = source_md
+    meta_rows = rows
+
+    cases_src = cases_json_path
+    if cases_src:
+        cases_src = os.path.abspath(os.path.expanduser(cases_src))
+    if cases_src and os.path.isfile(cases_src):
+        try:
+            import json as _json
+
+            with open(cases_src, encoding="utf-8") as cf:
+                payload = _json.load(cf)
+            if isinstance(payload, dict):
+                meta_title = meta_title or payload.get("title")
+                meta_standard = meta_standard or payload.get("standard")
+                meta_source_md = meta_source_md or payload.get("source_md")
+                cases = payload.get("cases")
+                if meta_rows is None and isinstance(cases, list):
+                    meta_rows = len(cases)
+        except Exception:
+            logger.debug("cases json metadata parse skipped", exc_info=True)
+        json_dest = os.path.join(tc_dir, f"{stem}.json")
+        try:
+            with open(cases_src, "rb") as f:
+                json_bytes = f.read()
+            with open(json_dest, "wb") as f:
+                f.write(json_bytes)
+        except OSError:
+            logger.exception("Failed to copy cases json sidecar")
+            json_dest = None
+
+    segment = sanitize_user_path_segment(user_id) or "default"
+    extra: dict[str, object] = {
+        "original_filename": original_name,
+        "sanitized": original_name != safe_name,
+    }
+    if meta_title:
+        extra["title"] = str(meta_title)
+    if meta_standard:
+        extra["standard"] = str(meta_standard)
+    if meta_source_md:
+        extra["source_md"] = str(meta_source_md)
+    if meta_rows is not None:
+        extra["rows"] = int(meta_rows)
+
+    try:
+        _ensure_ess_on_path()
+        from doc_list import TEST_CASES, upsert_document
+
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="saved",
+            user_id=segment,
+            json_path=os.path.abspath(json_dest) if json_dest else None,
+            extra=extra,
+            registry=TEST_CASES,
+        )
+    except Exception:
+        logger.exception("Failed to update ess test_cases_list after save")
+
+    logger.info(
+        "ess test_cases save user=%s → %s (original=%s, %s bytes%s)",
+        segment,
+        dest,
+        original_name,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "test_cases_dir": tc_dir,
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "json_path": json_dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+            "title": meta_title,
+            "standard": meta_standard,
+            "source_md": meta_source_md,
+            "rows": meta_rows,
+        },
+        "count": 1,
+        "test_cases_list": ess_test_cases_list_path(user_id),
     }
 
 
@@ -950,32 +1107,6 @@ else:
         region_name=bedrock_region
     )
 
-# Tavily Search API key: prefer config.json, else Secrets Manager
-tavily_api_wrapper = ""
-tavily_key = (config.get("tavily_api_key") or "").strip()
-if tavily_key:
-    tavily_api_wrapper = TavilySearchAPIWrapper(tavily_api_key=tavily_key)
-    os.environ["TAVILY_API_KEY"] = tavily_key
-else:
-    try:
-        get_tavily_api_secret = secretsmanager.get_secret_value(
-            SecretId="tavilyapikey"
-        )
-        secret = json.loads(get_tavily_api_secret["SecretString"])
-
-        if "tavily_api_key" in secret:
-            tavily_key = (secret["tavily_api_key"] or "").strip()
-
-        if tavily_key:
-            tavily_api_wrapper = TavilySearchAPIWrapper(tavily_api_key=tavily_key)
-            os.environ["TAVILY_API_KEY"] = tavily_key
-            persist_config_updates({"tavily_api_key": tavily_key})
-        else:
-            logger.info("tavily_key is required.")
-    except Exception as e:
-        logger.info(f"Tavily credential is required: {e}")
-        pass
-
 # Notion API key: prefer config.json, else Secrets Manager
 notion_api_key = (config.get("notion_api_key") or "").strip()
 if notion_api_key:
@@ -1408,6 +1539,7 @@ def upload_to_s3(
             "Key": s3_key,
             "Metadata": user_meta,
             "Body": file_bytes,
+            "CacheControl": "no-cache, max-age=0, must-revalidate",
         }
         if content_type and content_type != "no info":
             put_params["ContentType"] = content_type
@@ -2354,5 +2486,74 @@ def enrich_ess_documents_for_ui(
             str(item.get("original_filename") or "").strip() or filename or md_name
         )
         item["kind"] = kind
+        enriched.append(item)
+    return enriched
+
+
+def enrich_ess_test_cases_for_ui(
+    documents: list[dict],
+    user_id: str | None = None,
+) -> list[dict]:
+    """Attach xlsx/json view URLs for Test Cases UI."""
+    tc_root = ess_test_cases_dir(user_id)
+    enriched: list[dict] = []
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        item = dict(doc)
+        filename = str(item.get("filename") or "").strip()
+        stem = os.path.splitext(filename)[0] if filename else ""
+
+        xlsx_name = filename if filename.lower().endswith(".xlsx") else (
+            f"{stem}.xlsx" if stem else ""
+        )
+        local_xlsx = ""
+        if xlsx_name:
+            candidate = os.path.join(tc_root, xlsx_name)
+            if os.path.isfile(candidate):
+                local_xlsx = candidate
+            else:
+                src = str(item.get("source_path") or "").strip()
+                if src and os.path.isfile(src) and src.lower().endswith(".xlsx"):
+                    local_xlsx = src
+                    xlsx_name = os.path.basename(src)
+
+        json_path = str(item.get("json_path") or "").strip()
+        json_name = ""
+        local_json = ""
+        if json_path and os.path.isfile(json_path):
+            local_json = json_path
+            json_name = os.path.basename(json_path)
+        elif stem:
+            candidate = os.path.join(tc_root, f"{stem}.json")
+            if os.path.isfile(candidate):
+                local_json = candidate
+                json_name = f"{stem}.json"
+
+        item["xlsx_available"] = bool(local_xlsx)
+        item["xlsx_api_url"] = (
+            f"/api/ess/documents/{parse.quote(xlsx_name)}/xlsx"
+            if xlsx_name
+            else None
+        )
+        item["json_available"] = bool(local_json)
+        item["json_viewer_url"] = (
+            f"/api/ess/documents/{parse.quote(json_name or xlsx_name)}/json"
+            if (json_name or xlsx_name)
+            else None
+        )
+        if local_xlsx and os.path.isfile(local_xlsx):
+            try:
+                item["bytes"] = item.get("bytes") or os.path.getsize(local_xlsx)
+            except OSError:
+                pass
+        title = str(item.get("title") or "").strip()
+        item["display_name"] = (
+            title
+            or str(item.get("original_filename") or "").strip()
+            or filename
+            or json_name
+        )
+        item["kind"] = "test_case"
         enriched.append(item)
     return enriched

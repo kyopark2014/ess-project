@@ -44,7 +44,6 @@ numpy
 pandas
 matplotlib==3.10.0
 plotly_express==0.4.1
-tavily-python
 beautifulsoup4==4.12.3
 opensearch-py
 kaleido

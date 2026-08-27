@@ -422,57 +422,10 @@ def create_agent_role() -> str:
 
 
 def create_secrets() -> Dict[str, str]:
-    """Create Secrets Manager secrets."""
+    """Create Secrets Manager secrets (no shared secrets required for this project)."""
     logger.info("[1/6] Creating Secrets Manager secrets")
-    logger.info("Please enter API keys when prompted (press Enter to skip and leave empty):")
-    
-    secrets = {
-        "tavily": {
-            "name": "tavilyapikey",
-            "description": "secret for tavily api key",
-            "secret_value": {
-                "project_name": project_name,
-                "tavily_api_key": "",
-                "nova_act_api_key": ""
-            }
-        }
-    }
-    
-    secret_arns = {}
-    
-    for key, secret_config in secrets.items():
-        # Check if secret already exists before prompting for input
-        try:
-            response = secrets_client.describe_secret(SecretId=secret_config["name"])
-            secret_arns[key] = response["ARN"]
-            logger.warning(f"  Secret already exists: {secret_config['name']}")
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                # Secret doesn't exist, prompt for API key and create it
-                if key == "tavily":
-                    logger.info(f"Enter credential of {secret_config['name']} (Tavily API Key):")
-                    api_key = input(f"Creating {secret_config['name']} - Tavily API Key: ").strip()
-                    secret_config["secret_value"]["tavily_api_key"] = api_key
-                    secret_config["secret_value"]["nova_act_api_key"] = api_key
-                # Create the secret
-                try:
-                    response = secrets_client.create_secret(
-                        Name=secret_config["name"],
-                        Description=secret_config["description"],
-                        SecretString=json.dumps(secret_config["secret_value"])
-                    )
-                    secret_arns[key] = response["ARN"]
-                    logger.info(f"  ✓ Created secret: {secret_config['name']}")
-                except ClientError as create_error:
-                    logger.error(f"  Failed to create secret {secret_config['name']}: {create_error}")
-                    raise
-            else:
-                logger.error(f"  Failed to check secret {secret_config['name']}: {e}")
-                raise
-    
-    logger.info(f"✓ Created {len(secret_arns)} secrets")
-    
-    return secret_arns
+    logger.info("  No Secrets Manager secrets to create for this project")
+    return {}
 
 
 def _get_installer_iam_arn() -> str:

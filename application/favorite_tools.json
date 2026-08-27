@@ -1,11 +1,13 @@
 {
   "MCP": [
-    "web_fetch",
-    "websearch",
-    "memory"
+    "memory",
+    "knowledge base",
+    "web_fetch"
   ],
   "SKILL": [
-    "skill-creator",
-    "korea-weather"
+    "docx",
+    "testcase-generator",
+    "regulation-evaluator",
+    "xlsx"
   ]
 }

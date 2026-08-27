@@ -3,9 +3,10 @@ name: testcase-generator
 description: >
   Markdown 규격/표준 문서 경로를 받아 합격·불합격 판정용 Excel 테스트케이스(.xlsx)를 생성한다.
   열: 규격명, 항목, 원문, 기준, 판정결과(합격/불합격/부분합격 선택), 비고.
-  결과 파일은 S3 `artifacts/{project}/{user}/tc/`에 업로드하고 CloudFront URL을 반환한다.
+  초안은 S3 `artifacts/{project}/{user}/tc/`에 업로드하고 CloudFront URL을 반환한다.
+  사용자가 「저장」을 확인하면 `ess/test_cases/`에 영구 저장하고 `test_cases_list.json`을 갱신한다.
   트리거: testcase-generator, 테스트케이스, test case, 엑셀 체크리스트,
-  ESS Regulations에서 복사한 md 경로로 TC 생성, NFPA/UL 규격 합격불합격 표.
+  ESS Regulations에서 복사한 md 경로로 TC 생성, NFPA/UL 규격 합격불합격 표, 테스트케이스 저장.
 ---
 
 # testcase-generator
@@ -80,7 +81,7 @@ JSON 초안을 `ARTIFACTS_DIR/tc/` 아래에 저장한다.
 
 행에 `규격명`이 없으면 루트 `"standard"` 값이 채워진다. 예전에 `항목`에 규격명이 붙어 있어도 스크립트가 분리한다.
 
-### 3. Excel 생성 + S3 업로드
+### 3. Excel 생성 + S3 업로드 (초안)
 
 `application` 디렉터리에서 번들 스크립트를 실행한다.
 
@@ -102,15 +103,76 @@ python skills/testcase-generator/scripts/generate_testcase_xlsx.py \
 
 1. openpyxl로 `.xlsx` 작성 (시트명 `TestCases`, 열 순서 위 표와 동일)
 2. **판정결과** 열에 `합격` / `불합격` / `부분합격` 드롭다운(Data Validation) 적용
-3. 로컬 백업: `{SESSION_STORAGE}/{user}/artifacts/tc/{filename}.xlsx`
+3. 로컬 초안: `{SESSION_STORAGE}/{user}/artifacts/tc/{filename}.xlsx`
 4. S3 업로드 키: **`artifacts/{projectName}/{user}/tc/{filename}.xlsx`**
 5. stdout에 JSON 결과 출력 (CloudFront `url` 포함)
 
-### 4. 사용자에게 보고
+**이 단계에서는 `ess/test_cases/`에 쓰지 않는다.** 사용자 확인 후 저장한다.
+
+### 4. 사용자에게 초안 보고 + 「저장」 요청
 
 - **CloudFront URL** (`url`)을 반드시 제공한다.
 - 생성된 행 수, 소스 md 경로, S3 key를 짧게 요약한다.
 - `url`이 null이면 로컬 경로와 업로드 실패 사유를 알린다.
+- **반드시** 다음을 안내한다:
+
+> 생성된 테스트케이스가 적절하면 **「저장」**이라고 입력해 주세요.  
+> 저장하면 `ess/test_cases/`에 보관되고 `test_cases_list.json`에 등록됩니다.
+
+이후 대화에서 사용자가 **「저장」**(또는 “save”, “영구 저장”)이라고 하면 **5단계**를 수행한다.  
+수정 요청이 있으면 초안 JSON/엑셀을 고친 뒤 다시 보고하고 「저장」을 재요청한다.
+
+### 5. 사용자 「저장」 확인 → `ess/test_cases/` 영구 저장
+
+사용자가 「저장」을 말하면 직전 생성 결과의 `local_path`(xlsx)와 cases JSON 경로로 저장 스크립트를 실행한다.
+
+```bash
+cd application
+python skills/testcase-generator/scripts/save_testcase.py \
+  --xlsx "{SESSION_STORAGE}/{user}/artifacts/tc/<stem>_testcase.xlsx" \
+  --cases "$ARTIFACTS_DIR/tc/<stem>_cases.json" \
+  --user "<user_id>"
+```
+
+| 인자 | 설명 |
+|------|------|
+| `--xlsx` | 초안 `.xlsx` 경로 (**필수**) |
+| `--cases` | cases JSON (있으면 `{stem}.json` 사이드카로 함께 저장) |
+| `--user` | 세션 user_id |
+| `--filename` | 선택. `ess/test_cases/`에 쓸 파일명 |
+
+저장 결과:
+
+| 경로 | 내용 |
+|------|------|
+| `{SESSION_STORAGE}/{user}/ess/test_cases/{name}.xlsx` | 테스트케이스 엑셀 |
+| `{SESSION_STORAGE}/{user}/ess/test_cases/{stem}.json` | cases JSON 사이드카 (선택) |
+| `{SESSION_STORAGE}/{user}/ess/test_cases_list.json` | 레지스트리 (`project_list.json`과 동일 구조) |
+
+`test_cases_list.json` 항목 예:
+
+```json
+{
+  "user_id": "ksdyb",
+  "updated_at": "...",
+  "documents": [
+    {
+      "filename": "NFPA855_2023_testcase.xlsx",
+      "source_path": ".../ess/test_cases/NFPA855_2023_testcase.xlsx",
+      "json_path": ".../ess/test_cases/NFPA855_2023_testcase.json",
+      "status": "saved",
+      "title": "NFPA 855 2023 Test Cases",
+      "standard": "NFPA 855 (2023)",
+      "source_md": ".../ess/regulations/NFPA855_2023.md",
+      "rows": 42,
+      "bytes": 12345,
+      "suffix": ".xlsx"
+    }
+  ]
+}
+```
+
+저장 후 사용자에게 `saved.path`와 `test_cases_list` 경로를 짧게 보고한다.
 
 ## 기준 작성 가이드
 
@@ -136,7 +198,7 @@ python skills/testcase-generator/scripts/generate_testcase_xlsx.py \
 
 ## 의존성
 
-`openpyxl`, `boto3` (애플리케이션 환경에 포함). 스크립트가 config.json의 `s3_bucket`, `sharing_url`, `projectName`, `region`을 읽는다.
+`openpyxl`, `boto3` (애플리케이션 환경에 포함). 스크립트가 config.json의 `s3_bucket`, `sharing_url`, `projectName`, `region`을 읽는다. 영구 저장은 `utils.save_ess_testcase` / `ess/doc_list.TEST_CASES`를 사용한다.
 
 ## 예시
 
@@ -148,4 +210,6 @@ python skills/testcase-generator/scripts/generate_testcase_xlsx.py \
 
 1. md 읽기 → cases JSON 작성 (`규격명` / `항목` 분리)  
 2. `generate_testcase_xlsx.py --cases … --user ksdyb` 실행  
-3. 반환된 CloudFront URL 전달
+3. CloudFront URL 전달 + **「저장」** 요청  
+4. 사용자가 「저장」 → `save_testcase.py --xlsx … --cases … --user ksdyb`  
+5. `ess/test_cases/` 경로와 `test_cases_list.json` 갱신 결과 보고

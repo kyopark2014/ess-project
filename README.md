@@ -225,7 +225,6 @@ Builtin tools 예: `execute_code`, `write_file`, `read_file`, `bash`, `upload_fi
 
 대표적인 MCP:
 
-- [Tavily](https://github.com/kyopark2014/mcp/blob/main/mcp-tavily.md) — 웹 검색
 - [RAG / knowledge base](https://github.com/kyopark2014/mcp/blob/main/mcp-rag.md) — Bedrock Knowledge Base
 - [web_fetch](https://github.com/kyopark2014/mcp/blob/main/mcp-web-fetch.md) — URL → markdown
 - [Notion](https://github.com/kyopark2014/mcp/blob/main/mcp-notion.md) / Slack / memory 등
