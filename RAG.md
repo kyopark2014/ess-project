@@ -72,3 +72,7 @@ Amazon Bedrock의 Knowledge Base에 접속하면, 아래와 같이 "Hierarchical
 이후 아래와 같이 "위험저감분석(HMA)을 작성하는 방법을 설명하세요."라고 입력하면 RAG를 조회하여 아래와 같은 정보를 얻습니다. 
 
 <img width="835" height="726" alt="image" src="https://github.com/user-attachments/assets/245b557a-3e38-4ef1-a74d-07f826d5d031" />
+
+이때 이 결과를 얻기 위한 참고문헌을 아래와 같이 확인하고 조회할 수 있습니다.
+
+<img width="827" height="283" alt="image" src="https://github.com/user-attachments/assets/ce318387-6930-462b-94c4-6b8af872a678" />
