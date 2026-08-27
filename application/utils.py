@@ -1340,6 +1340,24 @@ def rag_docs_public_url(file_name: str, user_id: str | None = None) -> str | Non
     return f"{sharing_url.rstrip('/')}/{relative}"
 
 
+def s3_uri_to_sharing_url(uri: str, sharing_base: str | None = None) -> str | None:
+    """Map ``s3://bucket/key`` to ``{sharing_base}/key`` using the full object key.
+
+    RAG citations must keep ``docs/{project}/{user}/file.pdf`` — using only
+    ``docs/{filename}`` yields CloudFront AccessDenied (object missing).
+    """
+    base = (sharing_base if sharing_base is not None else sharing_url) or ""
+    base = base.strip().rstrip("/")
+    if not uri or not uri.startswith("s3://") or not base:
+        return None
+    rest = uri[5:]
+    parts = rest.split("/", 1)
+    if len(parts) < 2 or not parts[1]:
+        return None
+    encoded = "/".join(parse.quote(seg) for seg in parts[1].split("/"))
+    return f"{base}/{encoded}"
+
+
 def _s3_client_for_presign():
     """S3 client for browser-safe regional, virtual-hosted presigned URLs.
 

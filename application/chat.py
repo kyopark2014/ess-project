@@ -76,7 +76,6 @@ s3_prefix = "docs"
 s3_image_prefix = "images"
 
 path = config.get('sharing_url', '')
-doc_prefix = "docs/"
 
 model_name = "Claude 5.0 Sonnet"
 model_type = "claude"
@@ -1717,9 +1716,11 @@ def retrieve(query):
                 uri = location["s3Location"]["uri"] if location["s3Location"]["uri"] is not None else ""
 
                 name = uri.split("/")[-1]
-                encoded_name = parse.quote(name)
                 if path:
-                    url = f"{path}/{doc_prefix}{encoded_name}"
+                    # Full S3 key (docs/{project}/{user}/file), not docs/{filename} only.
+                    url = utils.s3_uri_to_sharing_url(uri, path) or s3_uri_to_console_url(
+                        uri, bedrock_region
+                    )
                 else:
                     url = s3_uri_to_console_url(uri, bedrock_region)
                 

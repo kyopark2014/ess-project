@@ -168,8 +168,19 @@ def retrieve(query):
                 uri = location["s3Location"]["uri"] if location["s3Location"]["uri"] is not None else ""
                 
                 name = uri.split("/")[-1]
-                encoded_name = parse.quote(name)                
-                url = f"{path}/{doc_prefix}{encoded_name}"
+                # Keep full key: docs/{project}/{user}/file.pdf (not docs/{filename}).
+                if path and uri.startswith("s3://"):
+                    rest = uri[5:]
+                    key_parts = rest.split("/", 1)
+                    if len(key_parts) > 1 and key_parts[1]:
+                        encoded_key = "/".join(
+                            parse.quote(seg) for seg in key_parts[1].split("/")
+                        )
+                        url = f"{path.rstrip('/')}/{encoded_key}"
+                    else:
+                        url = f"{path.rstrip('/')}/{doc_prefix}{parse.quote(name)}"
+                else:
+                    url = f"{path}/{doc_prefix}{parse.quote(name)}" if path else ""
                 
             elif "webLocation" in location:
                 url = location["webLocation"]["url"] if location["webLocation"]["url"] is not None else ""
