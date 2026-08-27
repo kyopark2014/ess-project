@@ -38,7 +38,7 @@ export function stagePendingLoadFile(file: LoadedFile): void {
 }
 
 /**
- * Document List 「복사」: stage for Load files, attach chip immediately, copy path.
+ * Document List 「복사」: stage for Load files, attach chip immediately, copy CloudFront URL.
  */
 export function copyDocumentForChat(file: LoadedFile): void {
   const normalized = normalize(file);

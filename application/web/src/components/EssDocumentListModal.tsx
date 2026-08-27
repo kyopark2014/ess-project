@@ -18,11 +18,18 @@ function openInNewTab(url: string) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
-function markdownPath(doc: EssDocument): string | null {
-  const path = (doc.md_path || "").trim();
-  if (path) return path;
-  const name = (doc.md_file || "").trim();
-  return name || null;
+/** CloudFront URL for agent chat (runtime cannot read ECS ``/mnt/app-data`` paths). */
+function markdownCopyUrl(doc: EssDocument): string | null {
+  const url = (doc.md_url || "").trim();
+  return url || null;
+}
+
+function markdownFileName(doc: EssDocument): string | null {
+  const fromField = (doc.md_file || "").trim();
+  if (fromField) return fromField;
+  const local = (doc.md_path || "").trim();
+  if (local) return local.split("/").pop() || local;
+  return null;
 }
 
 export function EssDocumentListModal({ onClose }: Props) {
@@ -74,18 +81,18 @@ export function EssDocumentListModal({ onClose }: Props) {
   }
 
   async function copyMarkdownPath(doc: EssDocument) {
-    const path = markdownPath(doc);
-    if (!path) return;
-    const name = path.split("/").pop() || path;
+    const url = markdownCopyUrl(doc);
+    if (!url) return;
+    const name = markdownFileName(doc) || url.split("/").pop() || url;
     const mdBytes = Number(doc.md_bytes);
-    // Attach chip immediately + stage for Load files; also copy path for skills.
+    // Attach chip immediately + stage for Load files; pass CloudFront URL to agent.
     copyDocumentForChat({
-      path,
+      path: url,
       name,
       size: Number.isFinite(mdBytes) && mdBytes > 0 ? mdBytes : 0,
     });
     try {
-      await navigator.clipboard.writeText(path);
+      await navigator.clipboard.writeText(url);
     } catch {
       // Clipboard is optional; chat attachment still works via event.
     }
@@ -126,8 +133,8 @@ export function EssDocumentListModal({ onClose }: Props) {
                 "document";
               const canMd = Boolean(doc.md_available && doc.md_viewer_url);
               const canPdf = Boolean(doc.pdf_available && (doc.pdf_api_url || doc.pdf_url));
-              const mdPath = markdownPath(doc);
-              const canCopy = Boolean(mdPath);
+              const mdCopyUrl = markdownCopyUrl(doc);
+              const canCopy = Boolean(mdCopyUrl);
               return (
                 <li key={key} className="ess-doc-list-item">
                   <div className="ess-doc-list-meta">
@@ -169,8 +176,8 @@ export function EssDocumentListModal({ onClose }: Props) {
                       disabled={!canCopy}
                       title={
                         canCopy
-                          ? `입력창에 Markdown 첨부 + 경로 복사\n${mdPath}`
-                          : "Markdown 경로 없음"
+                          ? `입력창에 Markdown 첨부 + CloudFront URL 복사\n${mdCopyUrl}`
+                          : "CloudFront URL 없음 (Sync 후 sharing_url 설정 확인)"
                       }
                       onClick={() => void copyMarkdownPath(doc)}
                     >

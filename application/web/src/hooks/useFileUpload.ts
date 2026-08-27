@@ -235,7 +235,7 @@ export function useFileUpload({ disabled = false }: UseFileUploadOptions = {}) {
     setLoadedFiles((prev) => prev.filter((item) => item.path !== path));
   }, []);
 
-  /** Attach an already-local workspace path (e.g. ESS Document List markdown). */
+  /** Attach a workspace path or CloudFront URL (e.g. ESS Document List markdown). */
   const attachExistingFile = useCallback(
     (file: LoadedFile) => {
       if (disabled) return;
