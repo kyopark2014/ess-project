@@ -461,15 +461,9 @@ Telegram Token은 [@BotFather](https://t.me/BotFather)에서 발급 후 `install
 
 ## 실행 결과
 
-Skill 생성·실행 예시는 아래와 같습니다.
+"knoledge base" MCP를 선택한 후에 "위험저감분석(HMA)을 작성하는 방법을 설명하세요."라고 입력하면 아래와 같이 RAG를 조회하여 규격 문서를 참고로한 결과를 얻을 수 있습니다.
 
-<img width="700" alt="image" src="https://github.com/user-attachments/assets/f12b214c-b7c2-407a-84b9-db9dae7fee77" />
-
-<img width="700" alt="image" src="https://github.com/user-attachments/assets/68c680a4-833a-4ab3-85b8-204cc1976106" />
-
-<img width="700" alt="image" src="https://github.com/user-attachments/assets/bb0f3034-dea2-4716-a53a-c2916c17308d" />
-
-<img width="700" alt="image" src="https://github.com/user-attachments/assets/bf6e12b0-658a-4360-b30b-82e19a8a034a" />
+<img width="835" height="726" alt="image" src="https://github.com/user-attachments/assets/245b557a-3e38-4ef1-a74d-07f826d5d031" />
 
 ## Reference
 
