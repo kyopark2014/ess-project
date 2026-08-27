@@ -10,6 +10,8 @@ Working tree (per user)::
     .session_storage/{user}/ess/
       regulations/          uploaded sources + extracted ``{stem}.md`` / ``{stem}.json``
       regulations_list.json document registry (filename, created_at, md path, …)
+      projects/             project sources + extracted ``{stem}.md`` / ``{stem}.json``
+      project_list.json     project document registry
       out/
         converted/          FMP intermediates (``.pdf_pages`` only)
         manifest.json
@@ -73,16 +75,17 @@ def _safe_user(user_id: str) -> str:
     )[:128] or "default"
 
 
-def _ess_dirs(user_id: str) -> tuple[Path, Path, Path, Path]:
-    from doc_list import migrate_raw_to_docs
+def _ess_dirs(user_id: str) -> tuple[Path, Path, Path, Path, Path]:
+    from doc_list import PROJECTS_DIR_NAME, migrate_raw_to_docs
 
     root = _session_storage() / _safe_user(user_id) / "ess"
     docs = migrate_raw_to_docs(root)
+    projects = root / PROJECTS_DIR_NAME
     out = root / "out"
     converted = out / "converted"
-    for path in (root, docs, out, converted):
+    for path in (root, docs, projects, out, converted):
         path.mkdir(parents=True, exist_ok=True)
-    return root, docs, out, converted
+    return root, docs, projects, out, converted
 
 
 def _file_key(path: Path) -> str:
@@ -149,15 +152,22 @@ def _list_source_docs(docs_dir: Path) -> list[Path]:
     return sorted(files, key=lambda p: p.name.lower())
 
 
-def _fingerprint(docs_dir: Path) -> str:
-    """Fingerprint source docs only (ignore generated ``.md`` / ``.json`` sidecars)."""
+def _fingerprint(*dirs: Path) -> str:
+    """Fingerprint source docs only (ignore generated ``.md`` / ``.json`` sidecars).
+
+    Regulations entries keep the legacy ``name:size:mtime`` format so existing
+    fingerprints stay stable when ``projects/`` is empty. Project files are
+    prefixed with ``projects/``.
+    """
     parts: list[str] = []
-    for path in _list_source_docs(docs_dir):
-        try:
-            st = path.stat()
-            parts.append(f"{path.name}:{st.st_size}:{int(st.st_mtime)}")
-        except OSError:
-            continue
+    for i, docs_dir in enumerate(dirs):
+        prefix = "" if i == 0 else f"{docs_dir.name}/"
+        for path in _list_source_docs(docs_dir):
+            try:
+                st = path.stat()
+                parts.append(f"{prefix}{path.name}:{st.st_size}:{int(st.st_mtime)}")
+            except OSError:
+                continue
     blob = "\n".join(parts).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
@@ -709,19 +719,25 @@ def sync_user(
     full: bool = False,
     model: str | None = None,
 ) -> int:
-    from doc_list import mark_extracted, remove_document, sync_doc_list_with_filesystem
+    from doc_list import (
+        mark_extracted,
+        remove_document,
+        sync_all_doc_lists,
+    )
 
     model_name = (model or "").strip()
     if model_name:
         os.environ["ESS_VISION_MODEL"] = model_name
         print(f"ESS vision model: {model_name}", flush=True)
 
-    ess_root, docs_dir, out_dir, converted = _ess_dirs(user_id)
+    ess_root, docs_dir, projects_dir, out_dir, converted = _ess_dirs(user_id)
     settings = _load_settings(user_id)
     use_fmp = bool(settings.get("ess_foundation_model_parser_enabled", True))
 
-    files = _list_source_docs(docs_dir)
-    fp = _fingerprint(docs_dir)
+    regulation_files = _list_source_docs(docs_dir)
+    project_files = _list_source_docs(projects_dir)
+    files = regulation_files + project_files
+    fp = _fingerprint(docs_dir, projects_dir)
     fp_path = out_dir / ".last_fingerprint"
     prev = fp_path.read_text(encoding="utf-8").strip() if fp_path.is_file() else ""
     prev_manifest = _load_manifest(out_dir)
@@ -738,18 +754,23 @@ def sync_user(
     if not full and fp == prev and prev and not incomplete:
         print("No files changed since last run. Nothing to update.")
         # Keep registry in sync with filesystem even on no-op.
-        sync_doc_list_with_filesystem(ess_root, user_id=user_id)
+        sync_all_doc_lists(ess_root, user_id=user_id)
         return 0
 
     if not files and not incomplete:
-        print("No files in ess/regulations. Nothing to update.")
+        print("No files in ess/regulations or ess/projects. Nothing to update.")
         fp_path.write_text(fp + "\n", encoding="utf-8")
-        sync_doc_list_with_filesystem(ess_root, user_id=user_id)
+        sync_all_doc_lists(ess_root, user_id=user_id)
         return 0
 
     mode = "foundation-model" if use_fmp else "pdfplumber/pypdf"
     print(f"[ess sync] user={user_id} ess={ess_root}", flush=True)
     print(f"[ess sync] pdf parser: {mode}", flush=True)
+    print(
+        f"[ess sync] sources: {len(regulation_files)} regulation(s), "
+        f"{len(project_files)} project(s)",
+        flush=True,
+    )
 
     to_stage: list[Path] = []
     if full or not prev:
@@ -807,7 +828,7 @@ def sync_user(
         if not to_stage:
             print("No files changed since last run. Nothing to update.")
             fp_path.write_text(fp + "\n", encoding="utf-8")
-            sync_doc_list_with_filesystem(ess_root, user_id=user_id)
+            sync_all_doc_lists(ess_root, user_id=user_id)
             return 0
         print(
             f"[ess sync] incremental: {len(to_stage)} file(s) to convert",
@@ -821,7 +842,7 @@ def sync_user(
         )
 
     print(
-        f"[ess sync] staging {len(to_stage)} file(s) → {docs_dir} "
+        f"[ess sync] staging {len(to_stage)} file(s) → regulations/projects "
         f"(intermediates: {converted})",
         flush=True,
     )
@@ -887,27 +908,30 @@ def sync_user(
     )
     synced_at = datetime.now(timezone.utc).isoformat()
     # Final registry rebuild so deleted/renamed files stay consistent.
-    doc_list = sync_doc_list_with_filesystem(ess_root, user_id=user_id)
+    lists = sync_all_doc_lists(ess_root, user_id=user_id)
+    doc_list = lists.get("regulations") or {}
+    project_list = lists.get("projects") or {}
 
     # Publish extracted markdown to artifacts/{project}/{user}/md/ for CloudFront.
     published_md = 0
     try:
         from application import utils as app_utils
 
-        for doc in doc_list.get("documents") or []:
-            if not isinstance(doc, dict):
-                continue
-            md_path = str(doc.get("md_path") or "").strip()
-            md_file = str(doc.get("md_file") or "").strip()
-            if not md_path or not Path(md_path).is_file():
-                continue
-            result = app_utils.publish_ess_markdown_to_artifacts(
-                md_path,
-                user_id=user_id,
-                file_name=md_file or None,
-            )
-            if result and result.get("uploaded"):
-                published_md += 1
+        for registry_data in (doc_list, project_list):
+            for doc in registry_data.get("documents") or []:
+                if not isinstance(doc, dict):
+                    continue
+                md_path = str(doc.get("md_path") or "").strip()
+                md_file = str(doc.get("md_file") or "").strip()
+                if not md_path or not Path(md_path).is_file():
+                    continue
+                result = app_utils.publish_ess_markdown_to_artifacts(
+                    md_path,
+                    user_id=user_id,
+                    file_name=md_file or None,
+                )
+                if result and result.get("uploaded"):
+                    published_md += 1
         if published_md:
             print(
                 f"[ess sync] published {published_md} markdown file(s) → "
@@ -924,10 +948,13 @@ def sync_user(
         "fingerprint": fp,
         "ess_dir": str(ess_root),
         "docs_dir": str(docs_dir),
+        "projects_dir": str(projects_dir),
         "raw_dir": str(docs_dir),  # backward-compatible
         "converted_dir": str(converted),
         "doc_list": str(ess_root / "regulations_list.json"),
+        "project_list": str(ess_root / "project_list.json"),
         "doc_count": len(doc_list.get("documents") or []),
+        "project_count": len(project_list.get("documents") or []),
         "package": str(_project_root() / "ess"),
         "staged_this_run": len(path_map),
         "markdown_files": md_count,
@@ -959,8 +986,10 @@ def sync_user(
                 "foundation_model_parser_enabled": use_fmp,
                 "session_ess_dir": str(ess_root),
                 "docs_dir": str(docs_dir),
+                "projects_dir": str(projects_dir),
                 "converted_dir": str(converted),
                 "doc_list": str(ess_root / "regulations_list.json"),
+                "project_list": str(ess_root / "project_list.json"),
             },
             ensure_ascii=False,
             indent=2,
@@ -972,7 +1001,7 @@ def sync_user(
     fmp_label = "Foundation Model Parser On" if use_fmp else "Foundation Model Parser Off"
     print(
         f"ESS sync complete: {len(to_stage)} source(s) → {md_count} markdown "
-        f"in docs/. {fmp_label}.",
+        f"in regulations/projects. {fmp_label}.",
         flush=True,
     )
     return 0

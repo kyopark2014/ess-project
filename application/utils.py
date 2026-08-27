@@ -145,7 +145,7 @@ def _ensure_ess_on_path() -> str:
 
 
 def ensure_user_ess_dir(user_id: str | None) -> str:
-    """Create ``{user}/ess``, ``regulations/``, ``out/``, ``out/converted/`` and return ESS root."""
+    """Create ``{user}/ess``, ``regulations/``, ``projects/``, ``out/``, … and return ESS root."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         raise ValueError(
@@ -156,6 +156,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
     for name in (
         "",
         "regulations",
+        "projects",
         "out",
         os.path.join("out", "converted"),
         os.path.join("out", "converted", ".pdf_pages"),
@@ -164,6 +165,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
     try:
         _ensure_ess_on_path()
         from doc_list import (
+            PROJECTS,
             doc_list_path,
             empty_doc_list,
             migrate_raw_to_docs,
@@ -181,6 +183,19 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
                 sync_doc_list_with_filesystem(ess_dir, user_id=segment)
             else:
                 save_doc_list(ess_dir, empty_doc_list(user_id=segment))
+        if not doc_list_path(ess_dir, PROJECTS).is_file():
+            projects = os.path.join(ess_dir, "projects")
+            has_projects = os.path.isdir(projects) and any(
+                os.path.isfile(os.path.join(projects, n)) for n in os.listdir(projects)
+            )
+            if has_projects:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=PROJECTS
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=PROJECTS
+                )
     except Exception:
         logger.debug("ess doc_list ensure skipped", exc_info=True)
     logger.debug("user ess dir ready: %s", ess_dir)
@@ -222,6 +237,15 @@ def ess_out_dir(user_id: str | None = None) -> str:
 
 def ess_doc_list_path(user_id: str | None = None) -> str:
     return os.path.join(get_user_ess_dir(user_id), "regulations_list.json")
+
+
+def ess_projects_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/projects``."""
+    return os.path.join(get_user_ess_dir(user_id), "projects")
+
+
+def ess_project_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "project_list.json")
 
 
 def _ess_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
@@ -319,6 +343,72 @@ def save_ess_raw_upload(
     return save_ess_doc_upload(filename, data, user_id=user_id)
 
 
+def save_ess_project_upload(
+    filename: str,
+    data: bytes,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    """Sanitize filename, write into ``{user}/ess/projects``, update project_list."""
+    if data is None or len(data) == 0:
+        raise ValueError("저장할 파일이 없습니다.")
+
+    ess = ensure_user_ess_dir(user_id)
+    projects = os.path.join(ess, "projects")
+    os.makedirs(projects, exist_ok=True)
+    dest, safe_name, original_name = _ess_docs_dest_path(projects, filename)
+    overwritten = os.path.isfile(dest)
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    segment = sanitize_user_path_segment(user_id) or "default"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import PROJECTS, upsert_document
+
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="uploaded",
+            user_id=segment,
+            extra={
+                "original_filename": original_name,
+                "sanitized": original_name != safe_name,
+            },
+            registry=PROJECTS,
+        )
+    except Exception:
+        logger.exception("Failed to update ess project_list after upload")
+
+    logger.info(
+        "ess projects upload user=%s → %s (original=%s, %s bytes%s)",
+        segment,
+        dest,
+        original_name,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "projects_dir": projects,
+        "docs_dir": projects,
+        "raw_dir": projects,
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+        },
+        "count": 1,
+        "doc_list": ess_project_list_path(user_id),
+        "project_list": ess_project_list_path(user_id),
+    }
+
+
 def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:
     """List files currently under the user's ``ess/regulations``."""
     docs = ess_docs_dir(user_id)
@@ -331,6 +421,29 @@ def list_ess_doc_files(user_id: str | None = None) -> list[dict[str, object]]:
         return []
     for name in names:
         path = os.path.join(docs, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        out.append({"name": name, "path": path, "bytes": size, "mtime": mtime})
+    return out
+
+
+def list_ess_project_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """List files currently under the user's ``ess/projects``."""
+    projects = ess_projects_dir(user_id)
+    if not os.path.isdir(projects):
+        return []
+    out: list[dict[str, object]] = []
+    try:
+        names = sorted(os.listdir(projects))
+    except OSError:
+        return []
+    for name in names:
+        path = os.path.join(projects, name)
         if not os.path.isfile(path):
             continue
         try:
@@ -1766,6 +1879,165 @@ def materialize_ess_docs_from_s3(
         return None
 
 
+def ess_projects_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """Build ``session-uploads/{user}/ess/projects/{file}`` staging key."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    return f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/projects/{safe_name}"
+
+
+def generate_ess_projects_presigned_put(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    expires_in: int = 900,
+) -> dict | None:
+    """Return a browser-usable presigned PUT URL for ESS project docs uploads."""
+    if not s3_bucket:
+        logger.error("s3_bucket is not configured")
+        return None
+
+    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(original)
+    except Exception:
+        safe_name = original.replace(" ", "_")
+
+    s3_key = ess_projects_s3_key(safe_name, user_id=user_id)
+    content_type = _session_upload_content_type(safe_name)
+    headers = {"Content-Type": content_type}
+    params: dict = {
+        "Bucket": s3_bucket,
+        "Key": s3_key,
+        "ContentType": content_type,
+    }
+    if content_type == "application/pdf":
+        params["ContentDisposition"] = "inline"
+        headers["Content-Disposition"] = "inline"
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params=params,
+            ExpiresIn=max(60, int(expires_in)),
+            HttpMethod="PUT",
+        )
+        return {
+            "file_name": safe_name,
+            "original_filename": original,
+            "sanitized": original != safe_name,
+            "s3_key": s3_key,
+            "content_type": content_type,
+            "upload_url": upload_url,
+            "headers": headers,
+            "expires_in": max(60, int(expires_in)),
+        }
+    except Exception:
+        logger.error(
+            "Error generating ESS projects presign: %s", traceback.format_exc()
+        )
+        return None
+
+
+def materialize_ess_projects_from_s3(
+    s3_key: str,
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    original_filename: str | None = None,
+) -> dict | None:
+    """Download a staged ESS object into ``{user}/ess/projects/`` and update project_list."""
+    if not s3_bucket or not s3_key:
+        return None
+
+    original = (
+        os.path.basename(original_filename or file_name or "").strip()
+        or "upload.bin"
+    )
+    try:
+        _ensure_ess_on_path()
+        from doc_list import PROJECTS, sanitize_ess_filename, upsert_document
+
+        safe_name = sanitize_ess_filename(file_name or original)
+    except Exception:
+        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        upsert_document = None  # type: ignore[assignment]
+        PROJECTS = None  # type: ignore[assignment]
+
+    ess = ensure_user_ess_dir(user_id)
+    projects = os.path.join(ess, "projects")
+    os.makedirs(projects, exist_ok=True)
+    dest_path = os.path.join(projects, safe_name)
+    overwritten = os.path.isfile(dest_path)
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.download_file(s3_bucket, s3_key, dest_path)
+        size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+        if size <= 0:
+            logger.error("ESS project materialize produced empty file: %s", dest_path)
+            return None
+
+        segment = sanitize_user_path_segment(user_id) or "default"
+        if upsert_document is not None and PROJECTS is not None:
+            try:
+                upsert_document(
+                    ess,
+                    filename=safe_name,
+                    source_path=os.path.abspath(dest_path),
+                    bytes_size=size,
+                    status="uploaded",
+                    user_id=segment,
+                    extra={
+                        "original_filename": original,
+                        "sanitized": original != safe_name,
+                        "s3_key": s3_key,
+                    },
+                    registry=PROJECTS,
+                )
+            except Exception:
+                logger.exception("Failed to update ess project_list after materialize")
+
+        logger.info(
+            "ess projects materialized user=%s s3_key=%s path=%s bytes=%s",
+            segment,
+            s3_key,
+            dest_path,
+            size,
+        )
+        return {
+            "ess_dir": ess,
+            "projects_dir": projects,
+            "docs_dir": projects,
+            "raw_dir": projects,
+            "saved": {
+                "name": safe_name,
+                "original_filename": original,
+                "sanitized": original != safe_name,
+                "path": dest_path,
+                "bytes": size,
+                "overwritten": overwritten,
+            },
+            "count": 1,
+            "s3_key": s3_key,
+            "doc_list": ess_project_list_path(user_id),
+            "project_list": ess_project_list_path(user_id),
+            "content_type": _session_upload_content_type(safe_name),
+            "content_length": size,
+        }
+    except Exception:
+        logger.error(
+            "Error materializing ESS projects key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # ESS document list — CloudFront URLs (PDF) + artifacts MD publish
 # ---------------------------------------------------------------------------
@@ -1773,6 +2045,23 @@ def materialize_ess_docs_from_s3(
 def ess_pdf_s3_key(file_name: str, user_id: str | None = None) -> str:
     """S3 key for an ESS PDF uploaded via Configure (session-uploads staging)."""
     return ess_docs_s3_key(file_name, user_id=user_id)
+
+
+def ess_project_pdf_public_url(
+    file_name: str, user_id: str | None = None
+) -> str | None:
+    """CloudFront URL for ``session-uploads/{user}/ess/projects/{pdf}``."""
+    if not sharing_url:
+        return None
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    segment = sanitize_user_path_segment(user_id) or "default"
+    relative = (
+        f"{ESS_DOCS_S3_PREFIX}/{parse.quote(segment)}/ess/projects/"
+        f"{parse.quote(safe_name)}"
+    )
+    return f"{sharing_url.rstrip('/')}/{relative}"
 
 
 def ess_pdf_public_url(file_name: str, user_id: str | None = None) -> str | None:
@@ -1920,9 +2209,17 @@ def publish_ess_markdown_to_artifacts(
         return result
 
 
-def head_ess_pdf_on_s3(file_name: str, user_id: str | None = None) -> bool:
+def head_ess_pdf_on_s3(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    kind: str = "regulation",
+) -> bool:
     """True when the ESS PDF object exists under session-uploads (CloudFront-ready)."""
-    key = ess_pdf_s3_key(file_name, user_id=user_id)
+    if kind == "project":
+        key = ess_projects_s3_key(file_name, user_id=user_id)
+    else:
+        key = ess_pdf_s3_key(file_name, user_id=user_id)
     if not s3_bucket or not key:
         return False
     try:
@@ -1952,12 +2249,17 @@ def enrich_ess_documents_for_ui(
     user_id: str | None = None,
     *,
     publish_md: bool = True,
+    kind: str = "regulation",
 ) -> list[dict]:
-    """Attach pdf/md view URLs for Regulations UI.
+    """Attach pdf/md view URLs for Regulations / Projects UI.
 
-    PDF: prefer CloudFront ``session-uploads/{user}/ess/{pdf}``; else API fallback.
+    PDF: prefer CloudFront session-uploads; else API fallback.
     MD: copy+upload to ``artifacts/{project}/{user}/md/`` then expose CloudFront + viewer URL.
     """
+    is_project = kind == "project"
+    docs_root = ess_projects_dir(user_id) if is_project else ess_docs_dir(user_id)
+    kind_qs = "?kind=project" if is_project else ""
+
     enriched: list[dict] = []
     for doc in documents:
         if not isinstance(doc, dict):
@@ -1979,17 +2281,17 @@ def enrich_ess_documents_for_ui(
 
         local_md = str(item.get("md_path") or "").strip()
         if local_md and not os.path.isfile(local_md) and md_name:
-            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            candidate = os.path.join(docs_root, md_name)
             if os.path.isfile(candidate):
                 local_md = candidate
         elif not local_md and md_name:
-            candidate = os.path.join(ess_docs_dir(user_id), md_name)
+            candidate = os.path.join(docs_root, md_name)
             if os.path.isfile(candidate):
                 local_md = candidate
 
         local_pdf = ""
         if pdf_name:
-            candidate = os.path.join(ess_docs_dir(user_id), pdf_name)
+            candidate = os.path.join(docs_root, pdf_name)
             if os.path.isfile(candidate):
                 local_pdf = candidate
             else:
@@ -1997,12 +2299,26 @@ def enrich_ess_documents_for_ui(
                 if src and os.path.isfile(src) and src.lower().endswith(".pdf"):
                     local_pdf = src
 
-        pdf_cf = ess_pdf_public_url(pdf_name, user_id=user_id) if pdf_name else None
-        pdf_on_s3 = bool(pdf_name and head_ess_pdf_on_s3(pdf_name, user_id=user_id))
+        if is_project:
+            pdf_cf = (
+                ess_project_pdf_public_url(pdf_name, user_id=user_id)
+                if pdf_name
+                else None
+            )
+        else:
+            pdf_cf = (
+                ess_pdf_public_url(pdf_name, user_id=user_id) if pdf_name else None
+            )
+        pdf_on_s3 = bool(
+            pdf_name
+            and head_ess_pdf_on_s3(pdf_name, user_id=user_id, kind=kind)
+        )
         item["pdf_available"] = bool(local_pdf) or pdf_on_s3
         item["pdf_url"] = pdf_cf if pdf_on_s3 else None
         item["pdf_api_url"] = (
-            f"/api/ess/documents/{parse.quote(pdf_name)}/pdf" if pdf_name else None
+            f"/api/ess/documents/{parse.quote(pdf_name)}/pdf{kind_qs}"
+            if pdf_name
+            else None
         )
 
         md_url = None
@@ -2030,12 +2346,13 @@ def enrich_ess_documents_for_ui(
         else:
             item["md_bytes"] = None
         item["md_viewer_url"] = (
-            f"/api/ess/documents/{parse.quote(md_name)}/markdown"
+            f"/api/ess/documents/{parse.quote(md_name)}/markdown{kind_qs}"
             if md_name
             else None
         )
         item["display_name"] = (
             str(item.get("original_filename") or "").strip() or filename or md_name
         )
+        item["kind"] = kind
         enriched.append(item)
     return enriched

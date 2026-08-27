@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""ESS document registry — ``{user}/ess/regulations_list.json``.
+"""ESS document registry — regulations + projects lists.
 
-Tracks documents under ``ess/regulations/`` (filename, created_at, md path, …).
-Call ``upsert_document`` on upload and ``mark_extracted`` / ``upsert_document``
-after Sync writes ``{stem}.md`` / ``{stem}.json``.
+Tracks documents under ``ess/regulations/`` (``regulations_list.json``) and
+``ess/projects/`` (``project_list.json``). Call ``upsert_document`` on upload
+and ``mark_extracted`` / ``upsert_document`` after Sync writes
+``{stem}.md`` / ``{stem}.json``.
 
 Usage:
-    from doc_list import upsert_document, load_doc_list, rebuild_doc_list
+    from doc_list import upsert_document, load_doc_list, rebuild_doc_list, PROJECTS
 
     upsert_document(ess_root, filename="a.pdf", source_path=...)
+    upsert_document(ess_root, filename="b.pdf", source_path=..., registry=PROJECTS)
     mark_extracted(ess_root, source_path=..., md_path=..., json_path=...)
 """
 
@@ -19,16 +21,32 @@ import json
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 DOC_LIST_NAME = "regulations_list.json"
 DOCS_DIR_NAME = "regulations"
+PROJECT_LIST_NAME = "project_list.json"
+PROJECTS_DIR_NAME = "projects"
 # Legacy names; migrated to ``regulations`` / ``regulations_list.json`` on ensure/load.
 LEGACY_DOC_LIST_NAME = "doc_list.json"
 LEGACY_DOCS_DIR_NAME = "docs"
 LEGACY_RAW_DIR_NAME = "raw"
+
+
+@dataclass(frozen=True)
+class DocRegistry:
+    """Which folder + JSON registry an ESS document belongs to."""
+
+    list_name: str
+    dir_name: str
+
+
+REGULATIONS = DocRegistry(DOC_LIST_NAME, DOCS_DIR_NAME)
+PROJECTS = DocRegistry(PROJECT_LIST_NAME, PROJECTS_DIR_NAME)
+DEFAULT_REGISTRY = REGULATIONS
 
 _SOURCE_SUFFIXES = {
     ".pdf",
@@ -102,13 +120,43 @@ def unique_ess_filename(directory: str | Path, filename: str) -> str:
         n += 1
 
 
-def doc_list_path(ess_root: str | Path) -> Path:
-    return Path(ess_root) / DOC_LIST_NAME
+def doc_list_path(
+    ess_root: str | Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> Path:
+    return Path(ess_root) / registry.list_name
 
 
-def docs_dir(ess_root: str | Path) -> Path:
-    """Return ``{ess}/regulations`` (canonical regulations storage)."""
-    return Path(ess_root) / DOCS_DIR_NAME
+def docs_dir(
+    ess_root: str | Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> Path:
+    """Return ``{ess}/regulations`` or ``{ess}/projects`` for *registry*."""
+    return Path(ess_root) / registry.dir_name
+
+
+def resolve_registry(
+    ess_root: str | Path,
+    *,
+    source_path: str | None = None,
+    registry: DocRegistry | None = None,
+) -> DocRegistry:
+    """Pick regulations vs projects from an explicit registry or source path."""
+    if registry is not None:
+        return registry
+    if not source_path:
+        return DEFAULT_REGISTRY
+    root = Path(ess_root)
+    try:
+        src = Path(source_path).resolve()
+    except OSError:
+        src = Path(source_path)
+    projects = (root / PROJECTS.dir_name).resolve()
+    try:
+        src.relative_to(projects)
+        return PROJECTS
+    except ValueError:
+        return DEFAULT_REGISTRY
 
 
 def _merge_legacy_dir_into(dest: Path, legacy: Path) -> bool:
@@ -306,8 +354,11 @@ def empty_doc_list(*, user_id: str | None = None) -> dict[str, Any]:
     }
 
 
-def load_doc_list(ess_root: str | Path) -> dict[str, Any]:
-    path = doc_list_path(ess_root)
+def load_doc_list(
+    ess_root: str | Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> dict[str, Any]:
+    path = doc_list_path(ess_root, registry)
     if not path.is_file():
         return empty_doc_list()
     try:
@@ -322,10 +373,14 @@ def load_doc_list(ess_root: str | Path) -> dict[str, Any]:
     return data
 
 
-def save_doc_list(ess_root: str | Path, data: dict[str, Any]) -> Path:
+def save_doc_list(
+    ess_root: str | Path,
+    data: dict[str, Any],
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> Path:
     root = Path(ess_root)
     root.mkdir(parents=True, exist_ok=True)
-    path = doc_list_path(root)
+    path = doc_list_path(root, registry)
     payload = dict(data) if isinstance(data, dict) else empty_doc_list()
     payload["updated_at"] = _now_iso()
     if not isinstance(payload.get("documents"), list):
@@ -360,8 +415,11 @@ def _find_index(documents: list[Any], key: str) -> int:
     return -1
 
 
-def list_documents(ess_root: str | Path) -> list[dict[str, Any]]:
-    data = load_doc_list(ess_root)
+def list_documents(
+    ess_root: str | Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> list[dict[str, Any]]:
+    data = load_doc_list(ess_root, registry)
     return [d for d in (data.get("documents") or []) if isinstance(d, dict)]
 
 
@@ -370,9 +428,11 @@ def get_document(
     *,
     filename: str | None = None,
     source_path: str | None = None,
+    registry: DocRegistry | None = None,
 ) -> dict[str, Any] | None:
+    reg = resolve_registry(ess_root, source_path=source_path, registry=registry)
     key = _norm_key(filename, source_path)
-    docs = list_documents(ess_root)
+    docs = list_documents(ess_root, reg)
     idx = _find_index(docs, key)
     return dict(docs[idx]) if idx >= 0 else None
 
@@ -391,11 +451,16 @@ def upsert_document(
     status: str | None = None,
     user_id: str | None = None,
     extra: dict[str, Any] | None = None,
+    registry: DocRegistry | None = None,
 ) -> dict[str, Any]:
-    """Insert or update one document entry; persist ``regulations_list.json``."""
+    """Insert or update one document entry; persist the matching list JSON."""
     root = Path(ess_root)
-    migrate_raw_to_docs(root)
-    data = load_doc_list(root)
+    reg = resolve_registry(root, source_path=source_path, registry=registry)
+    if reg is REGULATIONS:
+        migrate_raw_to_docs(root)
+    else:
+        docs_dir(root, reg).mkdir(parents=True, exist_ok=True)
+    data = load_doc_list(root, reg)
     if user_id is not None:
         data["user_id"] = user_id
 
@@ -406,7 +471,7 @@ def upsert_document(
 
     src_path = source_path
     if not src_path and key:
-        candidate = docs_dir(root) / key
+        candidate = docs_dir(root, reg) / key
         src_path = str(candidate.resolve()) if candidate.is_file() else str(candidate)
 
     resolved_suffix = suffix
@@ -423,7 +488,7 @@ def upsert_document(
     md = md_path
     js = json_path
     stem = Path(key).stem if key else ""
-    docs_path = docs_dir(root)
+    docs_path = docs_dir(root, reg)
     if md is None and stem:
         cand = docs_path / f"{stem}.md"
         if cand.is_file():
@@ -479,7 +544,7 @@ def upsert_document(
         documents.append(entry)
 
     data["documents"] = documents
-    save_doc_list(root, data)
+    save_doc_list(root, data, reg)
     return entry
 
 
@@ -490,6 +555,7 @@ def mark_extracted(
     md_path: str,
     json_path: str | None = None,
     user_id: str | None = None,
+    registry: DocRegistry | None = None,
 ) -> dict[str, Any]:
     """Update registry after Sync produces markdown next to the source."""
     name = os.path.basename(source_path)
@@ -502,6 +568,7 @@ def mark_extracted(
         status="extracted",
         user_id=user_id,
         updated_at=_now_iso(),
+        registry=registry,
     )
 
 
@@ -510,10 +577,12 @@ def remove_document(
     *,
     filename: str | None = None,
     source_path: str | None = None,
+    registry: DocRegistry | None = None,
 ) -> bool:
-    """Remove one entry from ``regulations_list.json``. Returns True if removed."""
+    """Remove one entry from the matching list JSON. Returns True if removed."""
     root = Path(ess_root)
-    data = load_doc_list(root)
+    reg = resolve_registry(root, source_path=source_path, registry=registry)
+    data = load_doc_list(root, reg)
     documents: list[Any] = list(data.get("documents") or [])
     key = _norm_key(filename, source_path)
     idx = _find_index(documents, key)
@@ -521,7 +590,7 @@ def remove_document(
         return False
     documents.pop(idx)
     data["documents"] = documents
-    save_doc_list(root, data)
+    save_doc_list(root, data, reg)
     return True
 
 
@@ -544,13 +613,18 @@ def rebuild_doc_list(
     ess_root: str | Path,
     *,
     user_id: str | None = None,
+    registry: DocRegistry = DEFAULT_REGISTRY,
 ) -> dict[str, Any]:
-    """Rescan ``regulations/`` and rewrite ``regulations_list.json`` from source files."""
+    """Rescan the registry folder and rewrite its list JSON from source files."""
     root = Path(ess_root)
-    docs_path = migrate_raw_to_docs(root)
+    if registry is REGULATIONS:
+        docs_path = migrate_raw_to_docs(root)
+    else:
+        docs_path = docs_dir(root, registry)
+        docs_path.mkdir(parents=True, exist_ok=True)
     previous = {
         str(d.get("filename") or ""): d
-        for d in list_documents(root)
+        for d in list_documents(root, registry)
         if isinstance(d, dict)
     }
     # Also index by original_filename so rebuild after sanitize keeps metadata.
@@ -560,78 +634,90 @@ def rebuild_doc_list(
             previous[str(orig)] = d
 
     documents: list[dict[str, Any]] = []
-    for path in sorted(docs_path.iterdir(), key=lambda p: p.name.lower()):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in _SOURCE_SUFFIXES:
-            continue
-        if _is_sidecar(path, docs_path):
-            continue
-        stem = path.stem
-        md = docs_path / f"{stem}.md"
-        js = docs_path / f"{stem}.json"
-        # Uploaded markdown is itself the source (and the md).
-        if path.suffix.lower() == ".md":
-            md_path = str(path.resolve())
-        else:
-            md_path = str(md.resolve()) if md.is_file() else None
-        json_p = str(js.resolve()) if js.is_file() else None
-        prev = previous.get(path.name) or {}
-        # Match prior entry whose sanitized name equals current file.
-        if not prev:
-            for cand in previous.values():
-                orig = str(cand.get("original_filename") or cand.get("filename") or "")
-                if orig and sanitize_ess_filename(orig) == path.name:
-                    prev = cand
-                    break
-        created = prev.get("created_at") or _iso_from_mtime(path) or _now_iso()
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = None
-        original = (
-            prev.get("original_filename")
-            or prev.get("filename")
-            or path.name
-        )
-        documents.append(
-            {
-                "filename": path.name,
-                "original_filename": original,
-                "sanitized": sanitize_ess_filename(str(original)) != str(original)
-                or str(original) != path.name,
-                "created_at": created,
-                "updated_at": _now_iso(),
-                "source_path": str(path.resolve()),
-                "md_path": md_path,
-                "md_file": os.path.basename(md_path) if md_path else None,
-                "json_path": json_p,
-                "bytes": size,
-                "suffix": path.suffix.lower(),
-                "status": "extracted" if md_path and Path(md_path).is_file() else "uploaded",
-            }
-        )
+    if docs_path.is_dir():
+        for path in sorted(docs_path.iterdir(), key=lambda p: p.name.lower()):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in _SOURCE_SUFFIXES:
+                continue
+            if _is_sidecar(path, docs_path):
+                continue
+            stem = path.stem
+            md = docs_path / f"{stem}.md"
+            js = docs_path / f"{stem}.json"
+            # Uploaded markdown is itself the source (and the md).
+            if path.suffix.lower() == ".md":
+                md_path = str(path.resolve())
+            else:
+                md_path = str(md.resolve()) if md.is_file() else None
+            json_p = str(js.resolve()) if js.is_file() else None
+            prev = previous.get(path.name) or {}
+            # Match prior entry whose sanitized name equals current file.
+            if not prev:
+                for cand in previous.values():
+                    orig = str(cand.get("original_filename") or cand.get("filename") or "")
+                    if orig and sanitize_ess_filename(orig) == path.name:
+                        prev = cand
+                        break
+            created = prev.get("created_at") or _iso_from_mtime(path) or _now_iso()
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = None
+            original = (
+                prev.get("original_filename")
+                or prev.get("filename")
+                or path.name
+            )
+            documents.append(
+                {
+                    "filename": path.name,
+                    "original_filename": original,
+                    "sanitized": sanitize_ess_filename(str(original)) != str(original)
+                    or str(original) != path.name,
+                    "created_at": created,
+                    "updated_at": _now_iso(),
+                    "source_path": str(path.resolve()),
+                    "md_path": md_path,
+                    "md_file": os.path.basename(md_path) if md_path else None,
+                    "json_path": json_p,
+                    "bytes": size,
+                    "suffix": path.suffix.lower(),
+                    "status": "extracted" if md_path and Path(md_path).is_file() else "uploaded",
+                }
+            )
 
     data = {
-        "user_id": user_id if user_id is not None else load_doc_list(root).get("user_id"),
+        "user_id": user_id
+        if user_id is not None
+        else load_doc_list(root, registry).get("user_id"),
         "updated_at": _now_iso(),
         "documents": documents,
     }
-    save_doc_list(root, data)
+    save_doc_list(root, data, registry)
     return data
 
 
-def sanitize_existing_docs_filenames(ess_root: str | Path) -> list[dict[str, str]]:
-    """Rename unsanitized files under ``regulations/`` (and matching sidecars / FMP paths).
+def sanitize_existing_docs_filenames(
+    ess_root: str | Path,
+    registry: DocRegistry = DEFAULT_REGISTRY,
+) -> list[dict[str, str]]:
+    """Rename unsanitized files under the registry folder (and matching sidecars / FMP paths).
 
     Returns a list of ``{from, to}`` renames for source files.
     """
     root = Path(ess_root)
-    docs_path = migrate_raw_to_docs(root)
+    if registry is REGULATIONS:
+        docs_path = migrate_raw_to_docs(root)
+    else:
+        docs_path = docs_dir(root, registry)
+        docs_path.mkdir(parents=True, exist_ok=True)
     renames: list[dict[str, str]] = []
 
     # Group by current stem so pdf/md/json move together.
     by_stem: dict[str, list[Path]] = {}
+    if not docs_path.is_dir():
+        return renames
     for path in list(docs_path.iterdir()):
         if not path.is_file():
             continue
@@ -725,7 +811,6 @@ def _fixup_paths_after_filename_sanitize(
     pages_root = ess_root / "out" / "converted" / ".pdf_pages"
     if not pages_root.is_dir():
         return
-    docs_path = ess_root / DOCS_DIR_NAME
     for work in list(pages_root.iterdir()):
         if not work.is_dir():
             continue
@@ -741,7 +826,16 @@ def _fixup_paths_after_filename_sanitize(
         if not new_stem:
             # Also try matching basename with spaces already partially fixed.
             continue
-        new_path = docs_path / f"{new_stem}{old.suffix.lower()}"
+        # Prefer the same folder the source lived in (regulations or projects).
+        parent = old.parent if old.parent.is_dir() else (ess_root / DOCS_DIR_NAME)
+        new_path = parent / f"{new_stem}{old.suffix.lower()}"
+        if not new_path.is_file():
+            # Fall back to regulations / projects roots.
+            for dirname in (DOCS_DIR_NAME, PROJECTS_DIR_NAME):
+                cand = ess_root / dirname / f"{new_stem}{old.suffix.lower()}"
+                if cand.is_file():
+                    new_path = cand
+                    break
         if not new_path.is_file():
             continue
         marker.write_text(str(new_path.resolve()) + "\n", encoding="utf-8")
@@ -762,11 +856,31 @@ def sync_doc_list_with_filesystem(
     ess_root: str | Path,
     *,
     user_id: str | None = None,
+    registry: DocRegistry = DEFAULT_REGISTRY,
 ) -> dict[str, Any]:
-    """Ensure ``regulations/`` exists, migrate legacy folders, sanitize names, rebuild."""
-    migrate_raw_to_docs(ess_root)
-    sanitize_existing_docs_filenames(ess_root)
-    return rebuild_doc_list(ess_root, user_id=user_id)
+    """Ensure the registry folder exists, migrate legacy folders (regs), sanitize, rebuild."""
+    if registry is REGULATIONS:
+        migrate_raw_to_docs(ess_root)
+    else:
+        docs_dir(ess_root, registry).mkdir(parents=True, exist_ok=True)
+    sanitize_existing_docs_filenames(ess_root, registry)
+    return rebuild_doc_list(ess_root, user_id=user_id, registry=registry)
+
+
+def sync_all_doc_lists(
+    ess_root: str | Path,
+    *,
+    user_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Rebuild both ``regulations_list.json`` and ``project_list.json``."""
+    return {
+        "regulations": sync_doc_list_with_filesystem(
+            ess_root, user_id=user_id, registry=REGULATIONS
+        ),
+        "projects": sync_doc_list_with_filesystem(
+            ess_root, user_id=user_id, registry=PROJECTS
+        ),
+    }
 
 
 if __name__ == "__main__":

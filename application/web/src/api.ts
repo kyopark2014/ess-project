@@ -245,6 +245,10 @@ export const api = {
     request<EssDocListResult>(
       `/api/ess/doc-list${publishMd ? "" : "?publish_md=0"}`,
     ),
+  getEssProjectList: (publishMd = true) =>
+    request<EssDocListResult>(
+      `/api/ess/project-list${publishMd ? "" : "?publish_md=0"}`,
+    ),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",
@@ -325,6 +329,89 @@ export const api = {
       }),
     });
     uiLog("ess:upload ok", { name: data.saved?.name, s3_key: data.s3_key });
+    return data;
+  },
+  uploadEssProjectFile: async (file: File): Promise<EssRawUploadResult> => {
+    // Presigned PUT: browser → S3 → ess/projects + project_list.json
+    uiLog("ess:project-upload start", { name: file.name, size: file.size });
+
+    const presign = await request<EssDocsPresignResult>("/api/ess/projects/presign", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: file.name,
+        size: file.size,
+        content_type: file.type || undefined,
+      }),
+    });
+    if (!presign.upload_url || !presign.s3_key) {
+      throw new Error("Presign succeeded but no upload URL was returned");
+    }
+
+    uiLog("ess:project-upload put start", {
+      name: presign.file_name,
+      s3_key: presign.s3_key,
+      size: file.size,
+      host: (() => {
+        try {
+          return new URL(presign.upload_url).host;
+        } catch {
+          return "";
+        }
+      })(),
+    });
+
+    const putHeaders = new Headers(presign.headers || {});
+    if (!putHeaders.has("Content-Type")) {
+      putHeaders.set(
+        "Content-Type",
+        presign.content_type || "application/octet-stream",
+      );
+    }
+    let putRes: Response;
+    try {
+      putRes = await fetch(presign.upload_url, {
+        method: "PUT",
+        body: file,
+        headers: putHeaders,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      uiError("ess:project-upload put network error", { detail });
+      throw new Error(`S3 직접 업로드 네트워크 오류: ${detail}`);
+    }
+    if (!putRes.ok) {
+      const text = await putRes.text();
+      uiError("ess:project-upload put failed", {
+        status: putRes.status,
+        body: text,
+      });
+      const codeMatch = text.match(/<Code>([^<]+)<\/Code>/i);
+      const msgMatch = text.match(/<Message>([^<]+)<\/Message>/i);
+      const s3Detail =
+        codeMatch || msgMatch
+          ? [codeMatch?.[1], msgMatch?.[1]].filter(Boolean).join(": ")
+          : "";
+      throw new Error(
+        s3Detail ||
+          text.slice(0, 200) ||
+          putRes.statusText ||
+          `Direct S3 upload failed (HTTP ${putRes.status})`,
+      );
+    }
+
+    const data = await request<EssRawUploadResult>("/api/ess/projects/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: presign.file_name,
+        s3_key: presign.s3_key,
+        size: file.size,
+        original_filename: presign.original_filename || file.name,
+      }),
+    });
+    uiLog("ess:project-upload ok", {
+      name: data.saved?.name,
+      s3_key: data.s3_key,
+    });
     return data;
   },
   syncEss: (full = false, model?: string) => {

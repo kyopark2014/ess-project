@@ -67,6 +67,37 @@ def _load_doc_list_payload(user_id: str, *, enrich: bool = False) -> dict:
         }
 
 
+def _load_project_list_payload(user_id: str, *, enrich: bool = False) -> dict:
+    try:
+        utils._ensure_ess_on_path()
+        from doc_list import PROJECTS, load_doc_list, list_documents
+
+        ess = utils.get_user_ess_dir(user_id)
+        data = load_doc_list(ess, PROJECTS)
+        documents = list_documents(ess, PROJECTS)
+        if enrich:
+            documents = utils.enrich_ess_documents_for_ui(
+                documents, user_id=user_id, publish_md=True
+            )
+        return {
+            "project_list": str(Path(ess) / "project_list.json"),
+            "doc_list": str(Path(ess) / "project_list.json"),
+            "documents": documents,
+            "doc_count": len(data.get("documents") or []),
+            "doc_list_updated_at": data.get("updated_at"),
+            "sharing_url": utils.sharing_url or None,
+        }
+    except Exception:
+        return {
+            "project_list": utils.ess_project_list_path(user_id),
+            "doc_list": utils.ess_project_list_path(user_id),
+            "documents": [],
+            "doc_count": 0,
+            "doc_list_updated_at": None,
+            "sharing_url": utils.sharing_url or None,
+        }
+
+
 def _safe_doc_name(name: str) -> str:
     cleaned = Path(unquote(name or "")).name.strip()
     if not cleaned or cleaned in {".", ".."}:
@@ -74,16 +105,27 @@ def _safe_doc_name(name: str) -> str:
     return cleaned
 
 
-def _resolve_ess_doc_path(user_id: str, filename: str) -> Path:
-    docs = Path(utils.ess_docs_dir(user_id))
-    path = (docs / filename).resolve()
-    try:
-        path.relative_to(docs.resolve())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid document path") from exc
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"Document not found: {filename}")
-    return path
+def _resolve_ess_doc_path(
+    user_id: str,
+    filename: str,
+    *,
+    kind: str = "regulation",
+) -> Path:
+    if kind == "project":
+        bases = [utils.ess_projects_dir(user_id), utils.ess_docs_dir(user_id)]
+    else:
+        bases = [utils.ess_docs_dir(user_id), utils.ess_projects_dir(user_id)]
+
+    for base_str in bases:
+        docs = Path(base_str)
+        path = (docs / filename).resolve()
+        try:
+            path.relative_to(docs.resolve())
+        except ValueError:
+            continue
+        if path.is_file():
+            return path
+    raise HTTPException(status_code=404, detail=f"Document not found: {filename}")
 
 
 def _assert_ess_doc_size(size: int | None) -> None:
@@ -177,7 +219,7 @@ def get_ess_doc_list(
     request: Request,
     publish_md: bool = Query(True),
 ) -> dict:
-    """Return ESS documents with PDF/MD view URLs.
+    """Return ESS regulation documents with PDF/MD view URLs.
 
     Markdown files are copied to ``artifacts/{project}/{user}/md/`` and uploaded
     to S3 so CloudFront can serve them. PDFs use ``session-uploads/{user}/ess/``.
@@ -189,6 +231,7 @@ def get_ess_doc_list(
         payload.get("documents") or [],
         user_id=user_id,
         publish_md=bool(publish_md),
+        kind="regulation",
     )
     payload["doc_count"] = len(payload["documents"])
     return {
@@ -198,20 +241,53 @@ def get_ess_doc_list(
     }
 
 
+@router.get("/project-list")
+def get_ess_project_list(
+    request: Request,
+    publish_md: bool = Query(True),
+) -> dict:
+    """Return ESS project documents with PDF/MD view URLs (``project_list.json``)."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    payload = _load_project_list_payload(user_id, enrich=False)
+    payload["documents"] = utils.enrich_ess_documents_for_ui(
+        payload.get("documents") or [],
+        user_id=user_id,
+        publish_md=bool(publish_md),
+        kind="project",
+    )
+    payload["doc_count"] = len(payload["documents"])
+    return {
+        "ess_dir": utils.get_user_ess_dir(user_id),
+        "projects_dir": utils.ess_projects_dir(user_id),
+        "docs_dir": utils.ess_projects_dir(user_id),
+        **payload,
+    }
+
+
 @router.get("/documents/{filename}/pdf")
-def get_ess_document_pdf(filename: str, request: Request):
+def get_ess_document_pdf(
+    filename: str,
+    request: Request,
+    kind: str = Query("regulation"),
+):
     """Open PDF in-browser: redirect to CloudFront when available, else stream local file."""
     user_id = require_user_id(request)
     name = _safe_doc_name(filename)
     if not name.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Not a PDF document")
 
-    if utils.head_ess_pdf_on_s3(name, user_id=user_id):
-        cf = utils.ess_pdf_public_url(name, user_id=user_id)
+    scope = "project" if kind == "project" else "regulation"
+    if utils.head_ess_pdf_on_s3(name, user_id=user_id, kind=scope):
+        cf = (
+            utils.ess_project_pdf_public_url(name, user_id=user_id)
+            if scope == "project"
+            else utils.ess_pdf_public_url(name, user_id=user_id)
+        )
         if cf:
             return RedirectResponse(url=cf, status_code=302)
 
-    path = _resolve_ess_doc_path(user_id, name)
+    path = _resolve_ess_doc_path(user_id, name, kind=scope)
     return FileResponse(
         path,
         media_type="application/pdf",
@@ -221,22 +297,41 @@ def get_ess_document_pdf(filename: str, request: Request):
 
 
 @router.get("/documents/{filename}/markdown")
-def get_ess_document_markdown_viewer(filename: str, request: Request):
+def get_ess_document_markdown_viewer(
+    filename: str,
+    request: Request,
+    kind: str = Query("regulation"),
+):
     """Markdown viewer HTML for a new browser tab."""
     user_id = require_user_id(request)
     name = _safe_doc_name(filename)
     stem = Path(name).stem
     # Accept either ``foo.md`` or the source pdf name ``foo.pdf``.
     md_name = name if name.lower().endswith(".md") else f"{stem}.md"
-    docs = Path(utils.ess_docs_dir(user_id))
+    scope = "project" if kind == "project" else "regulation"
+    docs = Path(
+        utils.ess_projects_dir(user_id)
+        if scope == "project"
+        else utils.ess_docs_dir(user_id)
+    )
     md_path = docs / md_name
     if not md_path.is_file():
-        # Fall back to artifacts/md copy.
-        alt = Path(utils.ess_md_local_artifacts_path(md_name, user_id=user_id))
-        if alt.is_file():
-            md_path = alt
+        # Try the other folder, then artifacts/md copy.
+        alt_docs = Path(
+            utils.ess_docs_dir(user_id)
+            if scope == "project"
+            else utils.ess_projects_dir(user_id)
+        )
+        if (alt_docs / md_name).is_file():
+            md_path = alt_docs / md_name
         else:
-            raise HTTPException(status_code=404, detail=f"Markdown not found: {md_name}")
+            alt = Path(utils.ess_md_local_artifacts_path(md_name, user_id=user_id))
+            if alt.is_file():
+                md_path = alt
+            else:
+                raise HTTPException(
+                    status_code=404, detail=f"Markdown not found: {md_name}"
+                )
 
     # Ensure CloudFront copy exists (best-effort).
     published = utils.publish_ess_markdown_to_artifacts(
@@ -473,6 +568,155 @@ async def upload_ess_regulation_file(
 ) -> dict:
     """Legacy multipart path — the UI uses ``/regulations/presign`` + ``/regulations/complete``."""
     return await _upload_ess_doc_multipart(request, file)
+
+
+@router.post("/projects/presign")
+def ess_projects_presign(body: EssDocsPresignRequest, request: Request) -> dict:
+    """Return a short-lived S3 PUT URL for project document uploads."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    _assert_ess_doc_size(body.size)
+
+    try:
+        presign = utils.generate_ess_projects_presigned_put(
+            body.file_name, user_id=user_id
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"업로드 URL 생성 실패: {exc}"
+        ) from exc
+    if not presign or not presign.get("upload_url"):
+        raise HTTPException(status_code=500, detail="업로드 URL 생성 실패")
+
+    return {
+        "ok": True,
+        "file_name": presign["file_name"],
+        "original_filename": presign.get("original_filename") or body.file_name,
+        "sanitized": bool(presign.get("sanitized")),
+        "s3_key": presign["s3_key"],
+        "content_type": presign.get("content_type"),
+        "upload_url": presign["upload_url"],
+        "headers": presign.get("headers") or {},
+        "expires_in": presign.get("expires_in"),
+        "projects_dir": utils.ess_projects_dir(user_id),
+        "docs_dir": utils.ess_projects_dir(user_id),
+    }
+
+
+@router.post("/projects/complete")
+def ess_projects_complete(body: EssDocsCompleteRequest, request: Request) -> dict:
+    """Confirm a presigned PUT and materialize the object into ``ess/projects/``."""
+    user_id = require_user_id(request)
+    utils.ensure_user_ess_dir(user_id)
+    _assert_ess_doc_size(body.size)
+
+    try:
+        utils._ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(body.file_name)
+    except Exception:
+        safe_name = Path(body.file_name).name
+
+    expected_key = utils.ess_projects_s3_key(safe_name, user_id=user_id)
+    key = (body.s3_key or "").strip()
+    if key != expected_key:
+        raise HTTPException(status_code=400, detail="Invalid upload target")
+
+    head = utils.head_session_upload_object(key)
+    if not head:
+        raise HTTPException(status_code=404, detail="Uploaded object not found")
+    content_length = int(head.get("content_length") or 0)
+    if content_length <= 0:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
+    if body.size is not None and content_length != body.size:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Uploaded size mismatch (expected {body.size}, got {content_length})"
+            ),
+        )
+    _assert_ess_doc_size(content_length)
+
+    result = utils.materialize_ess_projects_from_s3(
+        key,
+        safe_name,
+        user_id=user_id,
+        original_filename=body.original_filename or body.file_name,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=500, detail="Failed to save file to ess/projects"
+        )
+
+    return {
+        "ok": True,
+        "ess_dir": result["ess_dir"],
+        "projects_dir": result.get("projects_dir"),
+        "docs_dir": result.get("projects_dir"),
+        "raw_dir": result.get("projects_dir"),
+        "saved": result["saved"],
+        "count": result.get("count", 1),
+        "s3_key": key,
+        "files": utils.list_ess_project_files(user_id),
+        **_load_project_list_payload(user_id),
+    }
+
+
+async def _upload_ess_project_multipart(request: Request, file: UploadFile) -> dict:
+    """Legacy multipart upload for project docs (small files only)."""
+    user_id = require_user_id(request)
+    name = (file.filename or "").strip() or "upload.bin"
+    try:
+        data = await file.read()
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일은 업로드할 수 없습니다.")
+    if len(data) > _MAX_MULTIPART_DOC_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"파일이 너무 큽니다: {name} "
+                f"(최대 {_MAX_MULTIPART_DOC_BYTES // (1024 * 1024)}MB). "
+                "브라우저를 강력 새로고침(Cmd+Shift+R / Ctrl+Shift+R)한 뒤 "
+                "다시 업로드하세요. (presigned S3 업로드로 전환됩니다)"
+            ),
+        )
+
+    try:
+        result = utils.save_ess_project_upload(name, data, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"문서 저장 실패: {exc}",
+        ) from exc
+
+    return {
+        "ess_dir": result["ess_dir"],
+        "projects_dir": result.get("projects_dir"),
+        "docs_dir": result.get("projects_dir") or result.get("docs_dir"),
+        "raw_dir": result.get("projects_dir") or result.get("docs_dir"),
+        "saved": result["saved"],
+        "count": result["count"],
+        "files": utils.list_ess_project_files(user_id),
+        **_load_project_list_payload(user_id),
+    }
+
+
+@router.post("/projects")
+async def upload_ess_project_file(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict:
+    """Legacy multipart path — the UI uses ``/projects/presign`` + ``/projects/complete``."""
+    return await _upload_ess_project_multipart(request, file)
 
 
 @router.post("/docs/presign")

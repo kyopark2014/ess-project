@@ -5,6 +5,8 @@ import { copyDocumentForChat } from "../pendingLoadFile";
 
 interface Props {
   onClose: () => void;
+  /** ``regulation`` → regulations_list.json, ``project`` → project_list.json */
+  kind?: "regulation" | "project";
 }
 
 function formatBytes(bytes: number | undefined): string {
@@ -32,10 +34,15 @@ function markdownFileName(doc: EssDocument): string | null {
   return null;
 }
 
-export function EssDocumentListModal({ onClose }: Props) {
+export function EssDocumentListModal({ onClose, kind = "regulation" }: Props) {
   const [documents, setDocuments] = useState<EssDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const title = kind === "project" ? "Projects" : "Regulations";
+  const emptyHint =
+    kind === "project"
+      ? "등록된 Project 문서가 없습니다. Configure에서 Project 문서를 추가한 뒤 Sync 하세요."
+      : "등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.";
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +50,10 @@ export function EssDocumentListModal({ onClose }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const data = await api.getEssDocList(true);
+        const data =
+          kind === "project"
+            ? await api.getEssProjectList(true)
+            : await api.getEssDocList(true);
         if (cancelled) return;
         setDocuments(data.documents ?? []);
       } catch (err) {
@@ -57,7 +67,7 @@ export function EssDocumentListModal({ onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -110,7 +120,7 @@ export function EssDocumentListModal({ onClose }: Props) {
       }}
     >
       <div className="modal ess-doc-list-modal">
-        <h2 id="ess-doc-list-title">Regulations</h2>
+        <h2 id="ess-doc-list-title">{title}</h2>
         {loading ? (
           <p className="ess-configure-muted">문서 목록을 불러오는 중…</p>
         ) : error ? (
@@ -119,7 +129,7 @@ export function EssDocumentListModal({ onClose }: Props) {
           </p>
         ) : documents.length === 0 ? (
           <p className="ess-configure-docs-empty">
-            등록된 문서가 없습니다. Configure에서 문서를 추가한 뒤 Sync 하세요.
+            {emptyHint}
           </p>
         ) : (
           <ul className="ess-doc-list">

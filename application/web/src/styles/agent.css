@@ -2233,6 +2233,10 @@ button.config-popover-choice.is-selected {
   color: var(--text-muted);
 }
 
+.ess-configure-doc-section + .ess-configure-doc-section {
+  margin-top: 14px;
+}
+
 .ess-configure-toggle {
   display: flex;
   flex-direction: row;

@@ -30,7 +30,7 @@ import {
 type DrawerKind = "skill" | "mcp" | "model" | "appearance" | "ess" | null;
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
-const ESS_OPTIONS = ["Sync", "Regulations", "Configure"] as const;
+const ESS_OPTIONS = ["Sync", "Regulations", "Projects", "Configure"] as const;
 
 function themeToLabel(theme: Theme): string {
   return theme === "light" ? "Light" : "Dark";
@@ -89,6 +89,9 @@ export function Sidebar({
   const [settingsExpanded, setSettingsExpanded] = useState(false);
   const [essConfigureOpen, setEssConfigureOpen] = useState(false);
   const [essDocListOpen, setEssDocListOpen] = useState(false);
+  const [essDocListKind, setEssDocListKind] = useState<"regulation" | "project">(
+    "regulation",
+  );
   const [essSyncBusy, setEssSyncBusy] = useState(false);
   const [essSyncMessage, setEssSyncMessage] = useState<string | null>(null);
   const [essSyncProgress, setEssSyncProgress] = useState<{
@@ -160,6 +163,13 @@ export function Sidebar({
       return;
     }
     if (choice === "Regulations") {
+      setEssDocListKind("regulation");
+      setEssDocListOpen(true);
+      handleSettingApplied();
+      return;
+    }
+    if (choice === "Projects") {
+      setEssDocListKind("project");
       setEssDocListOpen(true);
       handleSettingApplied();
       return;
@@ -595,7 +605,10 @@ export function Sidebar({
       )}
 
       {essDocListOpen && (
-        <EssDocumentListModal onClose={() => setEssDocListOpen(false)} />
+        <EssDocumentListModal
+          kind={essDocListKind}
+          onClose={() => setEssDocListOpen(false)}
+        />
       )}
 
       {essSyncPopupOpen && (
