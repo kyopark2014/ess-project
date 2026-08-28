@@ -31,6 +31,7 @@ AGENT_STREAM_MAX_SECONDS = 14400
 LATE_PERSIST_WAIT_SECONDS = 1800
 DEFAULT_IMAGE_PROMPT = "첨부한 이미지를 분석해주세요."
 DEFAULT_FILE_PROMPT = "첨부한 파일을 분석해주세요."
+_IMAGE_ATTACHMENT_RE = re.compile(r"\.(png|jpe?g|gif|webp|bmp|svg)$", re.IGNORECASE)
 
 _TOOL_INPUT_RE = re.compile(r"^Tool: (.+?), Input:\s*(.*)$", re.DOTALL)
 _TOOL_RESULT_RE = re.compile(r"^Tool Result: (.+)$", re.DOTALL)
@@ -55,6 +56,19 @@ class ChatRequest(BaseModel):
         if not self.prompt.strip() and not self.files:
             raise ValueError("prompt or files is required")
         return self
+
+
+def _is_image_attachment_ref(ref: str) -> bool:
+    if ref.startswith("blob:"):
+        return True
+    path = ref.split("?")[0].split("#")[0]
+    return bool(_IMAGE_ATTACHMENT_RE.search(path))
+
+
+def _default_prompt_for_files(files: list[str]) -> str:
+    if files and all(_is_image_attachment_ref(f) for f in files):
+        return DEFAULT_IMAGE_PROMPT
+    return DEFAULT_FILE_PROMPT
 
 
 def _sse_event(payload: dict[str, Any]) -> str:
@@ -428,10 +442,7 @@ def chat_stream(task_id: str, body: ChatRequest, request: Request):
     files = [url.strip() for url in (body.files or []) if url and url.strip()]
     prompt = body.prompt.strip()
     if not prompt and files:
-        only_local = all(
-            not f.startswith(("http://", "https://", "blob:")) for f in files
-        )
-        prompt = DEFAULT_FILE_PROMPT if only_local else DEFAULT_IMAGE_PROMPT
+        prompt = _default_prompt_for_files(files)
 
     chat.update(
         userId=user_id,

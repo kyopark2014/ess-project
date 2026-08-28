@@ -238,11 +238,47 @@ def _touched_artifact_paths(before: dict, after: dict) -> list:
     return sorted(touched)
 
 
+def _user_id_from_artifacts_dir() -> str | None:
+    """Best-effort user id from the active ``ARTIFACTS_DIR``."""
+    try:
+        parent = os.path.dirname(ARTIFACTS_DIR)
+        name = os.path.basename(parent)
+        if name and name not in {"artifacts", ".session_storage"}:
+            return name
+    except OSError:
+        pass
+    return None
+
+
 def _paths_for_ui(relative_paths: list) -> list:
     """Return public URLs if sharing_url is set, otherwise absolute local paths."""
     out = []
     base = sharing_url.rstrip("/") if sharing_url else ""
+    user_id = _user_id_from_artifacts_dir()
     for rel in relative_paths:
+        norm = str(rel).replace("\\", "/")
+        fname = os.path.basename(norm)
+
+        # Test-case drafts live under artifacts/tc/ and publish to S3 artifacts/{project}/{user}/tc/.
+        if fname.lower().endswith(".xlsx") and "/artifacts/tc/" in norm:
+            cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
+            if cf_url:
+                out.append(cf_url)
+            else:
+                out.append(f"/api/ess/artifacts/tc/{quote(fname)}")
+            continue
+
+        # Never map .session_storage paths onto CloudFront (403 AccessDenied).
+        if norm.startswith(".session_storage/") or "/.session_storage/" in norm:
+            if fname.lower().endswith(".xlsx") and "/tc/" in norm:
+                cf_url = utils.ess_tc_artifacts_public_url(fname, user_id=user_id)
+                out.append(
+                    cf_url if cf_url else f"/api/ess/artifacts/tc/{quote(fname)}"
+                )
+            else:
+                out.append(os.path.abspath(os.path.join(WORKING_DIR, rel)))
+            continue
+
         if base:
             out.append(f"{base}/{quote(rel)}")
         else:

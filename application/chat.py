@@ -1239,7 +1239,7 @@ def _s3_key_from_file_ref(file_ref: str, *, default_prefix: str = s3_image_prefi
 
     raw = raw.split("?", 1)[0].split("#", 1)[0]
 
-    for prefix in (s3_image_prefix, s3_prefix, "images", "docs"):
+    for prefix in (s3_image_prefix, s3_prefix, "artifacts", "images", "docs"):
         marker = f"/{prefix}/"
         idx = raw.find(marker)
         if idx >= 0:
@@ -1364,6 +1364,58 @@ def _load_local_file_bytes(file_ref: str) -> bytes:
     path = (file_ref or "").strip()
     with open(path, "rb") as f:
         return f.read()
+
+
+def _is_http_file_ref(file_ref: str) -> bool:
+    raw = (file_ref or "").strip().lower()
+    return raw.startswith("http://") or raw.startswith("https://")
+
+
+def _load_bytes_from_s3_key(s3_key: str) -> bytes:
+    if not s3_bucket:
+        raise ValueError("s3_bucket is not configured")
+    s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+    logger.info("loading file from s3://%s/%s", s3_bucket, s3_key)
+    obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
+    return obj["Body"].read()
+
+
+def _load_bytes_from_http_url(url: str) -> bytes:
+    from urllib.request import Request, urlopen
+
+    req = Request(url, headers={"User-Agent": "ess-project/1.0"})
+    with urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+def _load_document_bytes_from_ref(file_ref: str) -> tuple[bytes, str]:
+    """Load document bytes from a local path, S3 sharing URL, or HTTP(S) URL."""
+    raw = (file_ref or "").strip()
+    if not raw:
+        raise ValueError("empty file ref")
+
+    if _is_local_file_ref(raw):
+        return _load_local_file_bytes(raw), raw
+
+    s3_key = _s3_key_from_file_ref(raw)
+    if s3_key and s3_bucket:
+        try:
+            data = _load_bytes_from_s3_key(s3_key)
+            return data, f"s3://{s3_bucket}/{s3_key}"
+        except Exception as exc:
+            logger.warning("S3 load failed for key=%s: %s", s3_key, exc)
+
+    if _is_http_file_ref(raw):
+        return _load_bytes_from_http_url(raw), raw
+
+    raise ValueError(f"cannot load file ref: {raw}")
+
+
+def _format_document_text_summary(file_ref: str, extracted: str) -> str:
+    max_chars = 100000
+    if len(extracted) > max_chars:
+        extracted = extracted[:max_chars] + "\n\n…(이하 생략)"
+    return f"파일 경로: {file_ref}\n\n{extracted}"
 
 
 def _extract_text_from_docx_bytes(data: bytes) -> str:
@@ -1500,6 +1552,7 @@ def get_summary_of_uploaded_file(file_ref: str, prompt: str = "") -> str:
 
     Images from sharing URLs are loaded from S3 under images/{user_id}/.
     Load-files paths under SESSION_STORAGE_DIR/{user}/upload/ are read from disk.
+    ESS markdown CloudFront URLs (artifacts/.../md/*.md) are loaded via S3 or HTTP.
     """
     file_name = _file_name_from_ref(file_ref)
     if not file_name:
@@ -1508,44 +1561,46 @@ def get_summary_of_uploaded_file(file_ref: str, prompt: str = "") -> str:
     file_type = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
     logger.info(f"get_summary_of_uploaded_file: file_name={file_name}, file_type={file_type}")
 
-    local_path = (file_ref or "").strip()
-    if _is_local_file_ref(local_path):
-        data = _load_local_file_bytes(local_path)
-        if file_type in ("png", "jpeg", "jpg", "webp", "gif"):
-            image_summary_prompt = (
-                "사용자의 요청을 참조하여 이미지의 내용을 분석한 후에 markdown 포맷으로 자세히 설명해주세요. "
-                f"사용자 요청: <user_request>{prompt}</user_request>"
-            )
-            return summarize_image(data, image_summary_prompt)
-        try:
-            extracted = _extract_text_from_document_bytes(data, file_type)
-        except Exception as e:
-            logger.error(f"Failed to extract text from {local_path}: {e}")
-            return (
-                f"파일 경로: {local_path}\n"
-                f"텍스트 추출에 실패했습니다 ({e}). "
-                f"read_file / bash로 `{local_path}` 를 직접 읽어 분석하세요."
-            )
-        if not extracted:
-            return (
-                f"파일 경로: {local_path}\n"
-                f"파일 형식(.{file_type})에서 텍스트를 추출하지 못했습니다. "
-                f"read_file / bash로 `{local_path}` 를 직접 읽어 분석하세요."
-            )
-        max_chars = 100000
-        if len(extracted) > max_chars:
-            extracted = extracted[:max_chars] + "\n\n…(이하 생략)"
-        return f"파일 경로: {local_path}\n\n{extracted}"
-
     if file_type in ("png", "jpeg", "jpg", "webp", "gif"):
-        _name, image_content = _load_image_bytes_from_ref(file_ref)
+        local_path = (file_ref or "").strip()
+        if _is_local_file_ref(local_path):
+            data = _load_local_file_bytes(local_path)
+        else:
+            _name, data = _load_image_bytes_from_ref(file_ref)
 
-        image_summary_prompt = f"사용자의 요청을 참조하여 이미지의 내용을 분석한 후에 markdown 포맷으로 자세히 설명해주세요. 사용자 요청: <user_request>{prompt}</user_request>"
+        image_summary_prompt = (
+            "사용자의 요청을 참조하여 이미지의 내용을 분석한 후에 markdown 포맷으로 자세히 설명해주세요. "
+            f"사용자 요청: <user_request>{prompt}</user_request>"
+        )
         logger.info(f"image_summary_prompt: {image_summary_prompt}")
+        return summarize_image(data, image_summary_prompt)
 
-        return summarize_image(image_content, image_summary_prompt)
+    try:
+        data, source = _load_document_bytes_from_ref(file_ref)
+    except Exception as e:
+        logger.error("Failed to load document %s: %s", file_ref, e)
+        return (
+            f"파일: {file_ref}\n"
+            f"파일을 읽지 못했습니다 ({e}). "
+            f"read_file / bash로 내용을 직접 읽어 분석하세요."
+        )
 
-    return f"지원하지 않는 파일 형식입니다: {file_type or '(unknown)'}"
+    try:
+        extracted = _extract_text_from_document_bytes(data, file_type)
+    except Exception as e:
+        logger.error("Failed to extract text from %s (%s): %s", file_ref, source, e)
+        return (
+            f"파일: {source}\n"
+            f"텍스트 추출에 실패했습니다 ({e}). "
+            f"read_file / bash로 내용을 직접 읽어 분석하세요."
+        )
+    if not extracted:
+        return (
+            f"파일: {source}\n"
+            f"파일 형식(.{file_type})에서 텍스트를 추출하지 못했습니다. "
+            f"read_file / bash로 내용을 직접 읽어 분석하세요."
+        )
+    return _format_document_text_summary(file_ref, extracted)
 
 ####################### Bedrock Agent #######################
 # RAG using Lambda
@@ -1863,6 +1918,39 @@ def _parse_execute_code_artifact_paths(tool_content: str) -> list:
     return out
 
 
+def _urls_from_execute_code_output(output: str) -> list:
+    """Extract published artifact URLs from execute_code stdout JSON (e.g. testcase xlsx)."""
+    if not isinstance(output, str) or not output.strip():
+        return []
+    urls: list[str] = []
+    text = output.strip()
+    if text.startswith("STDOUT:"):
+        text = text[len("STDOUT:") :].strip()
+    # Script tools print a single JSON object on stdout.
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, dict):
+        return []
+    url = data.get("url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        urls.append(url)
+    return urls
+
+
+def _is_broken_session_storage_url(url: str) -> bool:
+    """CloudFront URLs built from ``.session_storage/...`` paths always 403."""
+    return isinstance(url, str) and ".session_storage/" in url
+
+
 def _format_artifact_links_markdown(artifact_urls: list) -> str:
     """Append artifact list for the reply. Local files: relative path only (no file:// links)."""
     from pathlib import Path
@@ -2126,9 +2214,12 @@ def get_tool_info(tool_name, tool_content):
                 path = json_data["path"]
                 if isinstance(path, list):
                     for url in path:
+                        if _is_broken_session_storage_url(url):
+                            continue
                         urls.append(url)
                 else:
-                    urls.append(path)
+                    if not _is_broken_session_storage_url(path):
+                        urls.append(path)
             elif isinstance(json_data, list):  # Parse JSON from text field when json_data is a list
                 for item in json_data:
                     if isinstance(item, dict) and "text" in item:
@@ -2184,6 +2275,9 @@ def get_tool_info(tool_name, tool_content):
                 data = json.loads(tool_content)
                 if isinstance(data, dict) and isinstance(data.get("output"), str):
                     extra.extend(_parse_execute_code_artifact_paths(data["output"]))
+                    for u in _urls_from_execute_code_output(data["output"]):
+                        if u and u not in urls:
+                            urls.append(u)
             except json.JSONDecodeError:
                 extra.extend(_parse_execute_code_artifact_paths(tool_content))
         for u in extra:

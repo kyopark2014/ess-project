@@ -2520,6 +2520,39 @@ def ess_md_artifacts_public_url(
     return f"{sharing_url.rstrip('/')}/{'/'.join(parts)}"
 
 
+def ess_tc_artifacts_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """``artifacts/{projectName}/{user}/tc/{name}.xlsx`` for CloudFront download."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "testcase.xlsx"
+    if not safe_name.lower().endswith(".xlsx"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.xlsx"
+    project = (projectName or "default").strip().strip("/") or "default"
+    return f"artifacts/{project}/{segment}/tc/{safe_name}"
+
+
+def ess_tc_artifacts_public_url(
+    file_name: str, user_id: str | None = None
+) -> str | None:
+    if not sharing_url:
+        return None
+    key = ess_tc_artifacts_s3_key(file_name, user_id=user_id)
+    parts = [parse.quote(p) for p in key.split("/")]
+    return f"{sharing_url.rstrip('/')}/{'/'.join(parts)}"
+
+
+def ess_tc_local_artifacts_path(
+    file_name: str, user_id: str | None = None
+) -> str:
+    """Local draft: ``{user}/artifacts/tc/{name}.xlsx``."""
+    artifacts = ensure_user_artifacts_dir(user_id)
+    tc_dir = os.path.join(artifacts, "tc")
+    os.makedirs(tc_dir, exist_ok=True)
+    safe_name = os.path.basename(file_name or "").strip() or "testcase.xlsx"
+    if not safe_name.lower().endswith(".xlsx"):
+        safe_name = f"{os.path.splitext(safe_name)[0]}.xlsx"
+    return os.path.join(tc_dir, safe_name)
+
+
 def ess_md_local_artifacts_path(
     file_name: str, user_id: str | None = None
 ) -> str:

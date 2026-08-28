@@ -589,6 +589,24 @@ def get_ess_document_markdown_viewer(
     return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
 
 
+@router.get("/artifacts/tc/{filename}")
+def get_ess_testcase_draft_xlsx(filename: str, request: Request):
+    """Download a draft test-case workbook from ``{user}/artifacts/tc/``."""
+    user_id = require_user_id(request)
+    xlsx_name = _safe_doc_name(filename)
+    if not xlsx_name.lower().endswith(".xlsx"):
+        xlsx_name = f"{Path(xlsx_name).stem}.xlsx"
+    local_path = Path(utils.ess_tc_local_artifacts_path(xlsx_name, user_id=user_id))
+    if not local_path.is_file():
+        raise HTTPException(status_code=404, detail="Draft test-case file not found")
+    return FileResponse(
+        local_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=xlsx_name,
+        headers={"Content-Disposition": f'attachment; filename="{xlsx_name}"'},
+    )
+
+
 @router.get("/documents/{filename}/xlsx")
 def get_ess_document_xlsx(filename: str, request: Request):
     """Download / open a test-case Excel workbook."""
