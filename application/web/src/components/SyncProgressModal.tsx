@@ -65,6 +65,12 @@ export function SyncProgressModal({
       ? `파일 ${progress.file_i}/${progress.file_n}`
       : null;
 
+  const metaParts = [
+    fileLabel,
+    pageLabel,
+    pct !== null ? `${pct}%` : null,
+  ].filter((part): part is string => Boolean(part));
+
   const display =
     message?.trim() ||
     (busy ? "동기화를 진행하고 있습니다…" : "동기화가 완료되었습니다.");
@@ -110,15 +116,11 @@ export function SyncProgressModal({
             </p>
           )}
 
-          {(fileLabel || pageLabel || pct !== null) && (
-            <div className="sync-progress-meta">
-              {fileLabel && <span>{fileLabel}</span>}
-              {pageLabel && <span>{pageLabel}</span>}
-              {pct !== null && <span>{pct}%</span>}
-            </div>
+          {metaParts.length > 0 && (
+            <div className="sync-progress-meta">{metaParts.join(" · ")}</div>
           )}
 
-          {busy && (fileLabel || pageLabel || pct !== null) && (
+          {busy && metaParts.length > 0 && (
             <div
               className="sync-progress-bar"
               role="progressbar"
