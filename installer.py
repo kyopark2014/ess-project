@@ -1705,6 +1705,50 @@ def _apply_websearch_gateway_config(
     )
 
 
+def _oai_id_from_origin_access_identity(value: Optional[str]) -> Optional[str]:
+    """Parse ``origin-access-identity/cloudfront/{id}`` into the OAI id."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    return text.rsplit("/", 1)[-1] or None
+
+
+def _oai_id_from_distribution(distribution_id: str) -> Optional[str]:
+    """Read the S3 origin OAI id attached to an existing CloudFront distribution."""
+    cfg = cloudfront_client.get_distribution_config(Id=distribution_id)["DistributionConfig"]
+    for origin in cfg.get("Origins", {}).get("Items", []) or []:
+        oai = _oai_id_from_origin_access_identity(
+            (origin.get("S3OriginConfig") or {}).get("OriginAccessIdentity")
+        )
+        if oai:
+            return oai
+    return None
+
+
+def _put_cloudfront_oai_bucket_policy(s3_bucket_name: str, oai_id: str) -> None:
+    """Allow the CloudFront OAI to GetObject from the shared S3 bucket.
+
+    Shared CloudFront reuse used to return before this policy was written. If the
+    policy is missing, artifact URLs 403 even though the objects exist.
+    """
+    bucket_policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowCloudFrontAccess",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": f"arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity {oai_id}"
+                },
+                "Action": "s3:GetObject",
+                "Resource": f"arn:aws:s3:::{s3_bucket_name}/*",
+            }
+        ],
+    }
+    s3_client.put_bucket_policy(Bucket=s3_bucket_name, Policy=json.dumps(bucket_policy))
+    logger.info("  Updated S3 bucket policy for CloudFront OAI %s", oai_id)
+
+
 def create_cloudfront_distribution(s3_bucket_name: str) -> Dict[str, str]:
     """Create CloudFront distribution with S3 origin (shared RAG project)."""
     logger.info("[6/6] Creating CloudFront distribution")
@@ -1713,19 +1757,31 @@ def create_cloudfront_distribution(s3_bucket_name: str) -> Dict[str, str]:
         distributions = cloudfront_client.list_distributions()
         for dist in distributions.get("DistributionList", {}).get("Items", []):
             if cloudfront_comment in dist.get("Comment", ""):
-                if dist.get("Enabled", False):
-                    logger.warning(f"CloudFront distribution already exists: {dist['DomainName']}")
-                    return {"id": dist["Id"], "domain": dist["DomainName"]}
-                logger.warning(f"CloudFront distribution exists but is disabled: {dist['DomainName']}")
-                dist_config_response = cloudfront_client.get_distribution_config(Id=dist["Id"])
-                dist_config = dist_config_response["DistributionConfig"]
-                dist_config["Enabled"] = True
-                cloudfront_client.update_distribution(
-                    Id=dist["Id"],
-                    DistributionConfig=dist_config,
-                    IfMatch=dist_config_response["ETag"],
-                )
-                return {"id": dist["Id"], "domain": dist["DomainName"]}
+                dist_id = dist["Id"]
+                if not dist.get("Enabled", False):
+                    logger.warning(
+                        f"CloudFront distribution exists but is disabled: {dist['DomainName']}"
+                    )
+                    dist_config_response = cloudfront_client.get_distribution_config(Id=dist_id)
+                    dist_config = dist_config_response["DistributionConfig"]
+                    dist_config["Enabled"] = True
+                    cloudfront_client.update_distribution(
+                        Id=dist_id,
+                        DistributionConfig=dist_config,
+                        IfMatch=dist_config_response["ETag"],
+                    )
+                else:
+                    logger.warning(
+                        f"CloudFront distribution already exists: {dist['DomainName']}"
+                    )
+                oai_id = _oai_id_from_distribution(dist_id)
+                if oai_id:
+                    _put_cloudfront_oai_bucket_policy(s3_bucket_name, oai_id)
+                else:
+                    logger.warning(
+                        "Existing CloudFront distribution has no S3 OAI; bucket policy skipped"
+                    )
+                return {"id": dist_id, "domain": dist["DomainName"]}
     except Exception as e:
         logger.debug(f"Error checking existing CloudFront distributions: {e}")
 
@@ -1750,24 +1806,9 @@ def create_cloudfront_distribution(s3_bucket_name: str) -> Dict[str, str]:
         logger.error(f"Failed to handle Origin Access Identity: {e}")
         raise
 
-    bucket_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "AllowCloudFrontAccess",
-                "Effect": "Allow",
-                "Principal": {
-                    "AWS": f"arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity {oai_id}"
-                },
-                "Action": "s3:GetObject",
-                "Resource": f"arn:aws:s3:::{s3_bucket_name}/*",
-            }
-        ],
-    }
     try:
         time.sleep(10)
-        s3_client.put_bucket_policy(Bucket=s3_bucket_name, Policy=json.dumps(bucket_policy))
-        logger.info("  Updated S3 bucket policy for CloudFront access")
+        _put_cloudfront_oai_bucket_policy(s3_bucket_name, oai_id)
     except ClientError as e:
         logger.error(f"Failed to update S3 bucket policy: {e}")
         raise
