@@ -630,7 +630,7 @@ def upsert_document(
                 entry["updated_at"] = prev.get("updated_at") or now
             else:
                 entry["updated_at"] = now
-        if entry_fps.get("md") == prev_fps.get("md") and prev.get("extracted_at"):
+        if entry_fps == prev_fps and prev.get("extracted_at"):
             entry["extracted_at"] = prev.get("extracted_at")
         documents[idx] = entry
     else:
