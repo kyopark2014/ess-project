@@ -75,17 +75,18 @@ def _safe_user(user_id: str) -> str:
     )[:128] or "default"
 
 
-def _ess_dirs(user_id: str) -> tuple[Path, Path, Path, Path, Path]:
-    from doc_list import PROJECTS_DIR_NAME, migrate_raw_to_docs
+def _ess_dirs(user_id: str) -> tuple[Path, Path, Path, Path, Path, Path]:
+    from doc_list import DRAWINGS_DIR_NAME, PROJECTS_DIR_NAME, migrate_raw_to_docs
 
     root = _session_storage() / _safe_user(user_id) / "ess"
     docs = migrate_raw_to_docs(root)
     projects = root / PROJECTS_DIR_NAME
+    drawings = root / DRAWINGS_DIR_NAME
     out = root / "out"
     converted = out / "converted"
-    for path in (root, docs, projects, out, converted):
+    for path in (root, docs, projects, drawings, out, converted):
         path.mkdir(parents=True, exist_ok=True)
-    return root, docs, projects, out, converted
+    return root, docs, projects, drawings, out, converted
 
 
 def _file_key(path: Path) -> str:
@@ -730,14 +731,15 @@ def sync_user(
         os.environ["ESS_VISION_MODEL"] = model_name
         print(f"ESS vision model: {model_name}", flush=True)
 
-    ess_root, docs_dir, projects_dir, out_dir, converted = _ess_dirs(user_id)
+    ess_root, docs_dir, projects_dir, drawings_dir, out_dir, converted = _ess_dirs(user_id)
     settings = _load_settings(user_id)
     use_fmp = bool(settings.get("ess_foundation_model_parser_enabled", True))
 
     regulation_files = _list_source_docs(docs_dir)
     project_files = _list_source_docs(projects_dir)
-    files = regulation_files + project_files
-    fp = _fingerprint(docs_dir, projects_dir)
+    drawing_files = _list_source_docs(drawings_dir)
+    files = regulation_files + project_files + drawing_files
+    fp = _fingerprint(docs_dir, projects_dir, drawings_dir)
     fp_path = out_dir / ".last_fingerprint"
     prev = fp_path.read_text(encoding="utf-8").strip() if fp_path.is_file() else ""
     prev_manifest = _load_manifest(out_dir)
@@ -758,7 +760,7 @@ def sync_user(
         return 0
 
     if not files and not incomplete:
-        print("No files in ess/regulations or ess/projects. Nothing to update.")
+        print("No files in ess/regulations, ess/projects, or ess/drawings. Nothing to update.")
         fp_path.write_text(fp + "\n", encoding="utf-8")
         sync_all_doc_lists(ess_root, user_id=user_id)
         return 0
@@ -768,7 +770,7 @@ def sync_user(
     print(f"[ess sync] pdf parser: {mode}", flush=True)
     print(
         f"[ess sync] sources: {len(regulation_files)} regulation(s), "
-        f"{len(project_files)} project(s)",
+        f"{len(project_files)} project(s), {len(drawing_files)} drawing(s)",
         flush=True,
     )
 
@@ -842,7 +844,7 @@ def sync_user(
         )
 
     print(
-        f"[ess sync] staging {len(to_stage)} file(s) → regulations/projects "
+        f"[ess sync] staging {len(to_stage)} file(s) → regulations/projects/drawings "
         f"(intermediates: {converted})",
         flush=True,
     )
@@ -911,13 +913,14 @@ def sync_user(
     lists = sync_all_doc_lists(ess_root, user_id=user_id)
     doc_list = lists.get("regulations") or {}
     project_list = lists.get("projects") or {}
+    drawings_list = lists.get("drawings") or {}
 
     # Publish extracted markdown to artifacts/{project}/{user}/md/ for CloudFront.
     published_md = 0
     try:
         from application import utils as app_utils
 
-        for registry_data in (doc_list, project_list):
+        for registry_data in (doc_list, project_list, drawings_list):
             for doc in registry_data.get("documents") or []:
                 if not isinstance(doc, dict):
                     continue
@@ -949,12 +952,15 @@ def sync_user(
         "ess_dir": str(ess_root),
         "docs_dir": str(docs_dir),
         "projects_dir": str(projects_dir),
+        "drawings_dir": str(drawings_dir),
         "raw_dir": str(docs_dir),  # backward-compatible
         "converted_dir": str(converted),
         "doc_list": str(ess_root / "regulations_list.json"),
         "project_list": str(ess_root / "project_list.json"),
+        "drawings_list": str(ess_root / "drawings_list.json"),
         "doc_count": len(doc_list.get("documents") or []),
         "project_count": len(project_list.get("documents") or []),
+        "drawings_count": len(drawings_list.get("documents") or []),
         "package": str(_project_root() / "ess"),
         "staged_this_run": len(path_map),
         "markdown_files": md_count,
@@ -987,9 +993,11 @@ def sync_user(
                 "session_ess_dir": str(ess_root),
                 "docs_dir": str(docs_dir),
                 "projects_dir": str(projects_dir),
+                "drawings_dir": str(drawings_dir),
                 "converted_dir": str(converted),
                 "doc_list": str(ess_root / "regulations_list.json"),
                 "project_list": str(ess_root / "project_list.json"),
+                "drawings_list": str(ess_root / "drawings_list.json"),
             },
             ensure_ascii=False,
             indent=2,
@@ -1001,7 +1009,7 @@ def sync_user(
     fmp_label = "Foundation Model Parser On" if use_fmp else "Foundation Model Parser Off"
     print(
         f"ESS sync complete: {len(to_stage)} source(s) → {md_count} markdown "
-        f"in regulations/projects. {fmp_label}.",
+        f"in regulations/projects/drawings. {fmp_label}.",
         flush=True,
     )
     return 0

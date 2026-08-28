@@ -163,6 +163,9 @@ export interface EssDocument {
   json_available?: boolean;
   json_viewer_url?: string | null;
   kind?: string;
+  created_at?: string;
+  updated_at?: string;
+  extracted_at?: string;
 }
 
 export interface EssDocListResult {
@@ -258,8 +261,28 @@ export const api = {
     request<EssDocListResult>(
       `/api/ess/project-list${publishMd ? "" : "?publish_md=0"}`,
     ),
+  getEssDrawingList: (publishMd = true) =>
+    request<EssDocListResult>(
+      `/api/ess/drawing-list${publishMd ? "" : "?publish_md=0"}`,
+    ),
   getEssTestCaseList: () =>
     request<EssDocListResult>("/api/ess/test-case-list"),
+  deleteEssDocument: (
+    filename: string,
+    kind: "regulation" | "project" | "drawing" | "test_case" = "regulation",
+  ) =>
+    request<{
+      ok: boolean;
+      filename: string;
+      kind: string;
+      removed_from_list?: boolean;
+      deleted_files?: string[];
+      deleted_dirs?: string[];
+      s3_deleted?: string[];
+    }>(
+      `/api/ess/documents/${encodeURIComponent(filename)}?kind=${encodeURIComponent(kind)}`,
+      { method: "DELETE" },
+    ),
   putEssConfig: (body: { foundation_model_parser_enabled?: boolean }) =>
     request<EssConfig>("/api/ess/config", {
       method: "PUT",
@@ -420,6 +443,89 @@ export const api = {
       }),
     });
     uiLog("ess:project-upload ok", {
+      name: data.saved?.name,
+      s3_key: data.s3_key,
+    });
+    return data;
+  },
+  uploadEssDrawingFile: async (file: File): Promise<EssRawUploadResult> => {
+    // Presigned PUT: browser → S3 → ess/drawings + drawings_list.json
+    uiLog("ess:drawing-upload start", { name: file.name, size: file.size });
+
+    const presign = await request<EssDocsPresignResult>("/api/ess/drawings/presign", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: file.name,
+        size: file.size,
+        content_type: file.type || undefined,
+      }),
+    });
+    if (!presign.upload_url || !presign.s3_key) {
+      throw new Error("Presign succeeded but no upload URL was returned");
+    }
+
+    uiLog("ess:drawing-upload put start", {
+      name: presign.file_name,
+      s3_key: presign.s3_key,
+      size: file.size,
+      host: (() => {
+        try {
+          return new URL(presign.upload_url).host;
+        } catch {
+          return "";
+        }
+      })(),
+    });
+
+    const putHeaders = new Headers(presign.headers || {});
+    if (!putHeaders.has("Content-Type")) {
+      putHeaders.set(
+        "Content-Type",
+        presign.content_type || "application/octet-stream",
+      );
+    }
+    let putRes: Response;
+    try {
+      putRes = await fetch(presign.upload_url, {
+        method: "PUT",
+        body: file,
+        headers: putHeaders,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      uiError("ess:drawing-upload put network error", { detail });
+      throw new Error(`S3 직접 업로드 네트워크 오류: ${detail}`);
+    }
+    if (!putRes.ok) {
+      const text = await putRes.text();
+      uiError("ess:drawing-upload put failed", {
+        status: putRes.status,
+        body: text,
+      });
+      const codeMatch = text.match(/<Code>([^<]+)<\/Code>/i);
+      const msgMatch = text.match(/<Message>([^<]+)<\/Message>/i);
+      const s3Detail =
+        codeMatch || msgMatch
+          ? [codeMatch?.[1], msgMatch?.[1]].filter(Boolean).join(": ")
+          : "";
+      throw new Error(
+        s3Detail ||
+          text.slice(0, 200) ||
+          putRes.statusText ||
+          `Direct S3 upload failed (HTTP ${putRes.status})`,
+      );
+    }
+
+    const data = await request<EssRawUploadResult>("/api/ess/drawings/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: presign.file_name,
+        s3_key: presign.s3_key,
+        size: file.size,
+        original_filename: presign.original_filename || file.name,
+      }),
+    });
+    uiLog("ess:drawing-upload ok", {
       name: data.saved?.name,
       s3_key: data.s3_key,
     });

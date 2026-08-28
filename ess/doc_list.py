@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""ESS document registry — regulations + projects + test cases lists.
+"""ESS document registry — regulations + projects + drawings + test cases lists.
 
 Tracks documents under ``ess/regulations/`` (``regulations_list.json``),
-``ess/projects/`` (``project_list.json``), and ``ess/test_cases/``
+``ess/projects/`` (``project_list.json``), ``ess/drawings/``
+(``drawings_list.json``), and ``ess/test_cases/``
 (``test_cases_list.json``). Call ``upsert_document`` on upload and
 ``mark_extracted`` / ``upsert_document`` after Sync writes
 ``{stem}.md`` / ``{stem}.json``.
 
 Usage:
-    from doc_list import upsert_document, load_doc_list, rebuild_doc_list, PROJECTS, TEST_CASES
+    from doc_list import upsert_document, load_doc_list, rebuild_doc_list, PROJECTS, DRAWINGS, TEST_CASES
 
     upsert_document(ess_root, filename="a.pdf", source_path=...)
     upsert_document(ess_root, filename="b.pdf", source_path=..., registry=PROJECTS)
+    upsert_document(ess_root, filename="c.pdf", source_path=..., registry=DRAWINGS)
     upsert_document(ess_root, filename="tc.xlsx", source_path=..., registry=TEST_CASES)
     mark_extracted(ess_root, source_path=..., md_path=..., json_path=...)
 """
@@ -32,6 +34,8 @@ DOC_LIST_NAME = "regulations_list.json"
 DOCS_DIR_NAME = "regulations"
 PROJECT_LIST_NAME = "project_list.json"
 PROJECTS_DIR_NAME = "projects"
+DRAWINGS_LIST_NAME = "drawings_list.json"
+DRAWINGS_DIR_NAME = "drawings"
 TEST_CASE_LIST_NAME = "test_cases_list.json"
 TEST_CASES_DIR_NAME = "test_cases"
 # Legacy names; migrated to ``regulations`` / ``regulations_list.json`` on ensure/load.
@@ -50,6 +54,7 @@ class DocRegistry:
 
 REGULATIONS = DocRegistry(DOC_LIST_NAME, DOCS_DIR_NAME)
 PROJECTS = DocRegistry(PROJECT_LIST_NAME, PROJECTS_DIR_NAME)
+DRAWINGS = DocRegistry(DRAWINGS_LIST_NAME, DRAWINGS_DIR_NAME)
 TEST_CASES = DocRegistry(TEST_CASE_LIST_NAME, TEST_CASES_DIR_NAME)
 DEFAULT_REGISTRY = REGULATIONS
 
@@ -80,6 +85,62 @@ def _iso_from_mtime(path: Path) -> str | None:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
     except OSError:
         return None
+
+
+def _file_fingerprint(path: str | Path | None) -> str | None:
+    """Stable ``mtime:size`` token for change detection."""
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        st = p.stat()
+        return f"{int(st.st_mtime)}:{st.st_size}"
+    except OSError:
+        return None
+
+
+def _document_content_fingerprints(
+    source_path: str | Path | None,
+    md_path: str | None,
+    json_path: str | None,
+) -> dict[str, str | None]:
+    src = Path(source_path or "")
+    return {
+        "source": _file_fingerprint(src) if src.is_file() else None,
+        "md": _file_fingerprint(md_path),
+        "json": _file_fingerprint(json_path),
+    }
+
+
+def _prior_content_fingerprints(prev: dict[str, Any]) -> dict[str, str | None]:
+    stored = prev.get("content_fingerprints")
+    if isinstance(stored, dict):
+        return {
+            "source": stored.get("source"),
+            "md": stored.get("md"),
+            "json": stored.get("json"),
+        }
+    return _document_content_fingerprints(
+        prev.get("source_path"),
+        prev.get("md_path"),
+        prev.get("json_path"),
+    )
+
+
+def _extracted_at_from_paths(
+    source_path: str | Path,
+    md_path: str | None,
+    *,
+    registry: DocRegistry,
+) -> str | None:
+    """Best-effort extraction timestamp from sidecar/source mtimes on disk."""
+    if registry is TEST_CASES:
+        return _iso_from_mtime(Path(source_path))
+    if md_path and Path(md_path).is_file():
+        return _iso_from_mtime(Path(md_path))
+    return None
 
 
 def sanitize_ess_filename(filename: str, *, default: str = "upload.bin") -> str:
@@ -140,7 +201,7 @@ def docs_dir(
     ess_root: str | Path,
     registry: DocRegistry = DEFAULT_REGISTRY,
 ) -> Path:
-    """Return ``{ess}/regulations``, ``{ess}/projects``, or ``{ess}/test_cases``."""
+    """Return ``{ess}/regulations``, ``{ess}/projects``, ``{ess}/drawings``, or ``{ess}/test_cases``."""
     return Path(ess_root) / registry.dir_name
 
 
@@ -166,7 +227,7 @@ def resolve_registry(
         src = Path(source_path).resolve()
     except OSError:
         src = Path(source_path)
-    for cand in (TEST_CASES, PROJECTS):
+    for cand in (TEST_CASES, DRAWINGS, PROJECTS):
         folder = (root / cand.dir_name).resolve()
         try:
             src.relative_to(folder)
@@ -531,6 +592,13 @@ def upsert_document(
         "suffix": resolved_suffix,
         "status": inferred_status,
     }
+    entry_fps = _document_content_fingerprints(src_path, md, js)
+    entry["content_fingerprints"] = entry_fps
+    extracted = _extracted_at_from_paths(
+        src_path or "", md, registry=reg
+    )
+    if extracted:
+        entry["extracted_at"] = extracted
     if extra:
         for k, v in extra.items():
             if v is not None:
@@ -556,6 +624,14 @@ def upsert_document(
             entry["json_path"] = prev["json_path"]
         if status is None and prev.get("status") == "extracted" and entry.get("md_path"):
             entry["status"] = "extracted"
+        prev_fps = _prior_content_fingerprints(prev)
+        if updated_at is None:
+            if entry_fps == prev_fps:
+                entry["updated_at"] = prev.get("updated_at") or now
+            else:
+                entry["updated_at"] = now
+        if entry_fps.get("md") == prev_fps.get("md") and prev.get("extracted_at"):
+            entry["extracted_at"] = prev.get("extracted_at")
         documents[idx] = entry
     else:
         documents.append(entry)
@@ -704,13 +780,26 @@ def rebuild_doc_list(
                     if md_path and Path(md_path).is_file()
                     else "uploaded"
                 )
+            fps = _document_content_fingerprints(
+                str(path.resolve()), md_path, json_p
+            )
+            prev_fps = _prior_content_fingerprints(prev) if prev else {}
+            content_changed = not prev or fps != prev_fps
+            updated = _now_iso() if content_changed else (
+                prev.get("updated_at") or _now_iso()
+            )
+            extracted_at = _extracted_at_from_paths(
+                path, md_path, registry=registry
+            )
             entry: dict[str, Any] = {
                 "filename": path.name,
                 "original_filename": original,
                 "sanitized": sanitize_ess_filename(str(original)) != str(original)
                 or str(original) != path.name,
                 "created_at": created,
-                "updated_at": _now_iso(),
+                "updated_at": updated,
+                "extracted_at": extracted_at,
+                "content_fingerprints": fps,
                 "source_path": str(path.resolve()),
                 "md_path": md_path,
                 "md_file": os.path.basename(md_path) if md_path else None,
@@ -874,7 +963,7 @@ def _fixup_paths_after_filename_sanitize(
         new_path = parent / f"{new_stem}{old.suffix.lower()}"
         if not new_path.is_file():
             # Fall back to regulations / projects roots.
-            for dirname in (DOCS_DIR_NAME, PROJECTS_DIR_NAME):
+            for dirname in (DOCS_DIR_NAME, PROJECTS_DIR_NAME, DRAWINGS_DIR_NAME):
                 cand = ess_root / dirname / f"{new_stem}{old.suffix.lower()}"
                 if cand.is_file():
                     new_path = cand
@@ -922,6 +1011,9 @@ def sync_all_doc_lists(
         ),
         "projects": sync_doc_list_with_filesystem(
             ess_root, user_id=user_id, registry=PROJECTS
+        ),
+        "drawings": sync_doc_list_with_filesystem(
+            ess_root, user_id=user_id, registry=DRAWINGS
         ),
         "test_cases": sync_doc_list_with_filesystem(
             ess_root, user_id=user_id, registry=TEST_CASES

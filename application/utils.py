@@ -156,6 +156,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
         "",
         "regulations",
         "projects",
+        "drawings",
         "test_cases",
         "out",
         os.path.join("out", "converted"),
@@ -165,6 +166,7 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
     try:
         _ensure_ess_on_path()
         from doc_list import (
+            DRAWINGS,
             PROJECTS,
             TEST_CASES,
             doc_list_path,
@@ -196,6 +198,19 @@ def ensure_user_ess_dir(user_id: str | None) -> str:
             else:
                 save_doc_list(
                     ess_dir, empty_doc_list(user_id=segment), registry=PROJECTS
+                )
+        if not doc_list_path(ess_dir, DRAWINGS).is_file():
+            drawings = os.path.join(ess_dir, "drawings")
+            has_drawings = os.path.isdir(drawings) and any(
+                os.path.isfile(os.path.join(drawings, n)) for n in os.listdir(drawings)
+            )
+            if has_drawings:
+                sync_doc_list_with_filesystem(
+                    ess_dir, user_id=segment, registry=DRAWINGS
+                )
+            else:
+                save_doc_list(
+                    ess_dir, empty_doc_list(user_id=segment), registry=DRAWINGS
                 )
         if not doc_list_path(ess_dir, TEST_CASES).is_file():
             test_cases = os.path.join(ess_dir, "test_cases")
@@ -260,6 +275,15 @@ def ess_projects_dir(user_id: str | None = None) -> str:
 
 def ess_project_list_path(user_id: str | None = None) -> str:
     return os.path.join(get_user_ess_dir(user_id), "project_list.json")
+
+
+def ess_drawings_dir(user_id: str | None = None) -> str:
+    """``{SESSION_STORAGE}/{user}/ess/drawings``."""
+    return os.path.join(get_user_ess_dir(user_id), "drawings")
+
+
+def ess_drawings_list_path(user_id: str | None = None) -> str:
+    return os.path.join(get_user_ess_dir(user_id), "drawings_list.json")
 
 
 def ess_test_cases_dir(user_id: str | None = None) -> str:
@@ -432,6 +456,72 @@ def save_ess_project_upload(
     }
 
 
+def save_ess_drawing_upload(
+    filename: str,
+    data: bytes,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    """Sanitize filename, write into ``{user}/ess/drawings``, update drawings_list."""
+    if data is None or len(data) == 0:
+        raise ValueError("저장할 파일이 없습니다.")
+
+    ess = ensure_user_ess_dir(user_id)
+    drawings = os.path.join(ess, "drawings")
+    os.makedirs(drawings, exist_ok=True)
+    dest, safe_name, original_name = _ess_docs_dest_path(drawings, filename)
+    overwritten = os.path.isfile(dest)
+    with open(dest, "wb") as f:
+        f.write(data)
+
+    segment = sanitize_user_path_segment(user_id) or "default"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import DRAWINGS, upsert_document
+
+        upsert_document(
+            ess,
+            filename=safe_name,
+            source_path=os.path.abspath(dest),
+            bytes_size=len(data),
+            status="uploaded",
+            user_id=segment,
+            extra={
+                "original_filename": original_name,
+                "sanitized": original_name != safe_name,
+            },
+            registry=DRAWINGS,
+        )
+    except Exception:
+        logger.exception("Failed to update ess drawings_list after upload")
+
+    logger.info(
+        "ess drawings upload user=%s → %s (original=%s, %s bytes%s)",
+        segment,
+        dest,
+        original_name,
+        len(data),
+        ", overwrite" if overwritten else "",
+    )
+    return {
+        "ess_dir": ess,
+        "drawings_dir": drawings,
+        "docs_dir": drawings,
+        "raw_dir": drawings,
+        "saved": {
+            "name": safe_name,
+            "original_filename": original_name,
+            "sanitized": original_name != safe_name,
+            "path": dest,
+            "bytes": len(data),
+            "overwritten": overwritten,
+        },
+        "count": 1,
+        "doc_list": ess_drawings_list_path(user_id),
+        "drawings_list": ess_drawings_list_path(user_id),
+    }
+
+
 def save_ess_testcase(
     xlsx_path: str,
     *,
@@ -601,6 +691,29 @@ def list_ess_project_files(user_id: str | None = None) -> list[dict[str, object]
         return []
     for name in names:
         path = os.path.join(projects, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        out.append({"name": name, "path": path, "bytes": size, "mtime": mtime})
+    return out
+
+
+def list_ess_drawing_files(user_id: str | None = None) -> list[dict[str, object]]:
+    """List files currently under the user's ``ess/drawings``."""
+    drawings = ess_drawings_dir(user_id)
+    if not os.path.isdir(drawings):
+        return []
+    out: list[dict[str, object]] = []
+    try:
+        names = sorted(os.listdir(drawings))
+    except OSError:
+        return []
+    for name in names:
+        path = os.path.join(drawings, name)
         if not os.path.isfile(path):
             continue
         try:
@@ -2170,6 +2283,165 @@ def materialize_ess_projects_from_s3(
         return None
 
 
+def ess_drawings_s3_key(file_name: str, user_id: str | None = None) -> str:
+    """Build ``session-uploads/{user}/ess/drawings/{file}`` staging key."""
+    segment = sanitize_user_path_segment(user_id) or "default"
+    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    return f"{ESS_DOCS_S3_PREFIX}/{segment}/ess/drawings/{safe_name}"
+
+
+def generate_ess_drawings_presigned_put(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    expires_in: int = 900,
+) -> dict | None:
+    """Return a browser-usable presigned PUT URL for ESS drawing docs uploads."""
+    if not s3_bucket:
+        logger.error("s3_bucket is not configured")
+        return None
+
+    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    try:
+        _ensure_ess_on_path()
+        from doc_list import sanitize_ess_filename
+
+        safe_name = sanitize_ess_filename(original)
+    except Exception:
+        safe_name = original.replace(" ", "_")
+
+    s3_key = ess_drawings_s3_key(safe_name, user_id=user_id)
+    content_type = _session_upload_content_type(safe_name)
+    headers = {"Content-Type": content_type}
+    params: dict = {
+        "Bucket": s3_bucket,
+        "Key": s3_key,
+        "ContentType": content_type,
+    }
+    if content_type == "application/pdf":
+        params["ContentDisposition"] = "inline"
+        headers["Content-Disposition"] = "inline"
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params=params,
+            ExpiresIn=max(60, int(expires_in)),
+            HttpMethod="PUT",
+        )
+        return {
+            "file_name": safe_name,
+            "original_filename": original,
+            "sanitized": original != safe_name,
+            "s3_key": s3_key,
+            "content_type": content_type,
+            "upload_url": upload_url,
+            "headers": headers,
+            "expires_in": max(60, int(expires_in)),
+        }
+    except Exception:
+        logger.error(
+            "Error generating ESS drawings presign: %s", traceback.format_exc()
+        )
+        return None
+
+
+def materialize_ess_drawings_from_s3(
+    s3_key: str,
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    original_filename: str | None = None,
+) -> dict | None:
+    """Download a staged ESS object into ``{user}/ess/drawings/`` and update drawings_list."""
+    if not s3_bucket or not s3_key:
+        return None
+
+    original = (
+        os.path.basename(original_filename or file_name or "").strip()
+        or "upload.bin"
+    )
+    try:
+        _ensure_ess_on_path()
+        from doc_list import DRAWINGS, sanitize_ess_filename, upsert_document
+
+        safe_name = sanitize_ess_filename(file_name or original)
+    except Exception:
+        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        upsert_document = None  # type: ignore[assignment]
+        DRAWINGS = None  # type: ignore[assignment]
+
+    ess = ensure_user_ess_dir(user_id)
+    drawings = os.path.join(ess, "drawings")
+    os.makedirs(drawings, exist_ok=True)
+    dest_path = os.path.join(drawings, safe_name)
+    overwritten = os.path.isfile(dest_path)
+
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.download_file(s3_bucket, s3_key, dest_path)
+        size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+        if size <= 0:
+            logger.error("ESS drawing materialize produced empty file: %s", dest_path)
+            return None
+
+        segment = sanitize_user_path_segment(user_id) or "default"
+        if upsert_document is not None and DRAWINGS is not None:
+            try:
+                upsert_document(
+                    ess,
+                    filename=safe_name,
+                    source_path=os.path.abspath(dest_path),
+                    bytes_size=size,
+                    status="uploaded",
+                    user_id=segment,
+                    extra={
+                        "original_filename": original,
+                        "sanitized": original != safe_name,
+                        "s3_key": s3_key,
+                    },
+                    registry=DRAWINGS,
+                )
+            except Exception:
+                logger.exception("Failed to update ess drawings_list after materialize")
+
+        logger.info(
+            "ess drawings materialized user=%s s3_key=%s path=%s bytes=%s",
+            segment,
+            s3_key,
+            dest_path,
+            size,
+        )
+        return {
+            "ess_dir": ess,
+            "drawings_dir": drawings,
+            "docs_dir": drawings,
+            "raw_dir": drawings,
+            "saved": {
+                "name": safe_name,
+                "original_filename": original,
+                "sanitized": original != safe_name,
+                "path": dest_path,
+                "bytes": size,
+                "overwritten": overwritten,
+            },
+            "count": 1,
+            "s3_key": s3_key,
+            "doc_list": ess_drawings_list_path(user_id),
+            "drawings_list": ess_drawings_list_path(user_id),
+            "content_type": _session_upload_content_type(safe_name),
+            "content_length": size,
+        }
+    except Exception:
+        logger.error(
+            "Error materializing ESS drawings key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # ESS document list — CloudFront URLs (PDF) + artifacts MD publish
 # ---------------------------------------------------------------------------
@@ -2191,6 +2463,23 @@ def ess_project_pdf_public_url(
     segment = sanitize_user_path_segment(user_id) or "default"
     relative = (
         f"{ESS_DOCS_S3_PREFIX}/{parse.quote(segment)}/ess/projects/"
+        f"{parse.quote(safe_name)}"
+    )
+    return f"{sharing_url.rstrip('/')}/{relative}"
+
+
+def ess_drawing_pdf_public_url(
+    file_name: str, user_id: str | None = None
+) -> str | None:
+    """CloudFront URL for ``session-uploads/{user}/ess/drawings/{pdf}``."""
+    if not sharing_url:
+        return None
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    segment = sanitize_user_path_segment(user_id) or "default"
+    relative = (
+        f"{ESS_DOCS_S3_PREFIX}/{parse.quote(segment)}/ess/drawings/"
         f"{parse.quote(safe_name)}"
     )
     return f"{sharing_url.rstrip('/')}/{relative}"
@@ -2350,6 +2639,8 @@ def head_ess_pdf_on_s3(
     """True when the ESS PDF object exists under session-uploads (CloudFront-ready)."""
     if kind == "project":
         key = ess_projects_s3_key(file_name, user_id=user_id)
+    elif kind == "drawing":
+        key = ess_drawings_s3_key(file_name, user_id=user_id)
     else:
         key = ess_pdf_s3_key(file_name, user_id=user_id)
     if not s3_bucket or not key:
@@ -2360,6 +2651,65 @@ def head_ess_pdf_on_s3(
         return True
     except Exception:
         return False
+
+
+def ess_pdf_s3_key_for_kind(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    kind: str = "regulation",
+) -> str | None:
+    """S3 key for an ESS PDF under session-uploads."""
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name:
+        return None
+    if kind == "project":
+        return ess_projects_s3_key(safe_name, user_id=user_id)
+    if kind == "drawing":
+        return ess_drawings_s3_key(safe_name, user_id=user_id)
+    return ess_pdf_s3_key(safe_name, user_id=user_id)
+
+
+def stream_ess_pdf_from_s3(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    kind: str = "regulation",
+):
+    """Stream an ESS PDF from S3 (session-uploads staging key).
+
+    Used by the PDF viewer API when the local copy is missing. Avoids redirecting
+    to CloudFront ``/session-uploads/*`` on distributions that still route that
+    prefix to the ALB default behavior.
+    """
+    from fastapi.responses import StreamingResponse
+
+    key = ess_pdf_s3_key_for_kind(file_name, user_id=user_id, kind=kind)
+    if not s3_bucket or not key:
+        return None
+    safe_name = os.path.basename(file_name or "").strip() or "document.pdf"
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        obj = s3_client.get_object(Bucket=s3_bucket, Key=key)
+        body = obj["Body"]
+        content_type = obj.get("ContentType") or "application/pdf"
+        if content_type in ("binary/octet-stream", "no info", "application/octet-stream"):
+            content_type = "application/pdf"
+        return StreamingResponse(
+            body.iter_chunks(chunk_size=1024 * 256),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_name}"',
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+    except Exception:
+        logger.error(
+            "Error streaming ESS pdf from S3 key=%s: %s",
+            key,
+            traceback.format_exc(),
+        )
+        return None
 
 
 def _head_s3_object_quiet(s3_key: str) -> dict | None:
@@ -2383,14 +2733,19 @@ def enrich_ess_documents_for_ui(
     publish_md: bool = True,
     kind: str = "regulation",
 ) -> list[dict]:
-    """Attach pdf/md view URLs for Regulations / Projects UI.
+    """Attach pdf/md view URLs for Regulations / Projects / Drawings UI.
 
     PDF: prefer CloudFront session-uploads; else API fallback.
     MD: copy+upload to ``artifacts/{project}/{user}/md/`` then expose CloudFront + viewer URL.
     """
-    is_project = kind == "project"
-    docs_root = ess_projects_dir(user_id) if is_project else ess_docs_dir(user_id)
-    kind_qs = "?kind=project" if is_project else ""
+    folder_kind = kind in {"project", "drawing"}
+    if kind == "project":
+        docs_root = ess_projects_dir(user_id)
+    elif kind == "drawing":
+        docs_root = ess_drawings_dir(user_id)
+    else:
+        docs_root = ess_docs_dir(user_id)
+    kind_qs = f"?kind={kind}" if folder_kind else ""
 
     enriched: list[dict] = []
     for doc in documents:
@@ -2431,9 +2786,15 @@ def enrich_ess_documents_for_ui(
                 if src and os.path.isfile(src) and src.lower().endswith(".pdf"):
                     local_pdf = src
 
-        if is_project:
+        if kind == "project":
             pdf_cf = (
                 ess_project_pdf_public_url(pdf_name, user_id=user_id)
+                if pdf_name
+                else None
+            )
+        elif kind == "drawing":
+            pdf_cf = (
+                ess_drawing_pdf_public_url(pdf_name, user_id=user_id)
                 if pdf_name
                 else None
             )
@@ -2557,3 +2918,213 @@ def enrich_ess_test_cases_for_ui(
         item["kind"] = "test_case"
         enriched.append(item)
     return enriched
+
+
+def _unlink_under_roots(path: str, *roots: str) -> bool:
+    """Delete a file only if it resolves under one of *roots*. Returns True if removed."""
+    from pathlib import Path
+
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    if not target.is_file():
+        return False
+    for root in roots:
+        try:
+            base = Path(root).expanduser().resolve()
+            target.relative_to(base)
+        except (OSError, ValueError):
+            continue
+        try:
+            target.unlink()
+            return True
+        except OSError:
+            logger.warning("Failed to unlink ESS file: %s", target)
+            return False
+    return False
+
+
+def _delete_s3_key_quiet(s3_key: str | None) -> bool:
+    """Best-effort S3 object delete. Returns True if delete was attempted successfully."""
+    if not s3_bucket or not s3_key:
+        return False
+    try:
+        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client.delete_object(Bucket=s3_bucket, Key=s3_key)
+        return True
+    except Exception:
+        logger.debug("ESS S3 delete skipped for %s", s3_key, exc_info=True)
+        return False
+
+
+def delete_ess_document(
+    user_id: str | None,
+    filename: str,
+    *,
+    kind: str = "regulation",
+) -> dict:
+    """Remove one ESS document: local source + sidecars + list entry (+ S3 best-effort).
+
+    Deletes:
+    - Regulations/Projects: ``{stem}.pdf`` (or source), ``{stem}.md``, ``{stem}.json``
+    - Test Cases: ``{stem}.xlsx``, ``{stem}.json``
+    - Optional intermediates under ``out/converted/.pdf_pages/{stem}_*``
+    - Local ``artifacts/md/{stem}.md`` and matching S3 objects when configured
+    """
+    import shutil
+    from pathlib import Path as _Path
+
+    name = os.path.basename(filename or "").strip()
+    if not name or name in {".", ".."}:
+        raise ValueError("Invalid document name")
+
+    kind_norm = (kind or "regulation").strip().lower()
+    if kind_norm not in {"regulation", "project", "drawing", "test_case"}:
+        raise ValueError(f"Unsupported kind: {kind}")
+
+    _ensure_ess_on_path()
+    from doc_list import (
+        DRAWINGS,
+        PROJECTS,
+        REGULATIONS,
+        TEST_CASES,
+        get_document,
+        remove_document,
+    )
+
+    registry = {
+        "regulation": REGULATIONS,
+        "project": PROJECTS,
+        "drawing": DRAWINGS,
+        "test_case": TEST_CASES,
+    }[kind_norm]
+
+    ess = ensure_user_ess_dir(user_id)
+    artifacts_root = ensure_user_artifacts_dir(user_id)
+    docs_dir = {
+        "regulation": ess_docs_dir(user_id),
+        "project": ess_projects_dir(user_id),
+        "drawing": ess_drawings_dir(user_id),
+        "test_case": ess_test_cases_dir(user_id),
+    }[kind_norm]
+
+    entry = get_document(ess, filename=name, registry=registry)
+    if entry is None:
+        # Registry miss: still allow cleanup if source/sidecar files exist on disk.
+        stem = os.path.splitext(name)[0]
+        entry = {
+            "filename": name,
+            "source_path": os.path.join(docs_dir, name),
+            "md_path": (
+                os.path.join(docs_dir, f"{stem}.md")
+                if kind_norm != "test_case"
+                else None
+            ),
+            "json_path": os.path.join(docs_dir, f"{stem}.json"),
+        }
+        exists = any(
+            p and os.path.isfile(p)
+            for p in (
+                entry["source_path"],
+                entry.get("md_path"),
+                entry.get("json_path"),
+            )
+        )
+        if not exists:
+            raise FileNotFoundError(f"Document not found: {name}")
+
+    stem = os.path.splitext(str(entry.get("filename") or name))[0] or os.path.splitext(
+        name
+    )[0]
+    deleted_files: list[str] = []
+    allow_roots = (ess, artifacts_root, docs_dir)
+
+    paths_to_delete: list[str] = []
+    for key in ("source_path", "md_path", "json_path"):
+        raw = str(entry.get(key) or "").strip()
+        if raw:
+            paths_to_delete.append(raw)
+
+    # Always include stem-based siblings next to the registry folder.
+    if kind_norm == "test_case":
+        for sibling in (f"{stem}.xlsx", f"{stem}.json", name):
+            paths_to_delete.append(os.path.join(docs_dir, sibling))
+    else:
+        for sibling in (f"{stem}.pdf", f"{stem}.md", f"{stem}.json", name):
+            paths_to_delete.append(os.path.join(docs_dir, sibling))
+        md_file = str(entry.get("md_file") or "").strip()
+        if md_file:
+            paths_to_delete.append(os.path.join(docs_dir, os.path.basename(md_file)))
+            paths_to_delete.append(ess_md_local_artifacts_path(md_file, user_id=user_id))
+        else:
+            paths_to_delete.append(
+                ess_md_local_artifacts_path(f"{stem}.md", user_id=user_id)
+            )
+
+    seen: set[str] = set()
+    for path in paths_to_delete:
+        try:
+            resolved = str(_Path(path).expanduser().resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _unlink_under_roots(resolved, *allow_roots):
+            deleted_files.append(resolved)
+
+    # FMP intermediates: ``out/converted/.pdf_pages/{stem}_*``
+    pages_root = _Path(ess_converted_dir(user_id)) / ".pdf_pages"
+    deleted_dirs: list[str] = []
+    if kind_norm != "test_case" and pages_root.is_dir() and stem:
+        for work in pages_root.iterdir():
+            if not work.is_dir():
+                continue
+            if work.name == stem or work.name.startswith(f"{stem}_"):
+                try:
+                    shutil.rmtree(work)
+                    deleted_dirs.append(str(work))
+                except OSError:
+                    logger.warning("Failed to remove pdf_pages dir: %s", work)
+
+    # Best-effort S3 cleanup (PDF staging + published markdown).
+    s3_deleted: list[str] = []
+    entry_s3 = str(entry.get("s3_key") or "").strip()
+    if entry_s3 and _delete_s3_key_quiet(entry_s3):
+        s3_deleted.append(entry_s3)
+
+    if kind_norm == "project":
+        pdf_key = ess_projects_s3_key(f"{stem}.pdf", user_id=user_id)
+    elif kind_norm == "drawing":
+        pdf_key = ess_drawings_s3_key(f"{stem}.pdf", user_id=user_id)
+    elif kind_norm == "regulation":
+        pdf_key = ess_docs_s3_key(f"{stem}.pdf", user_id=user_id)
+    else:
+        pdf_key = None
+    if pdf_key and pdf_key not in s3_deleted and _delete_s3_key_quiet(pdf_key):
+        s3_deleted.append(pdf_key)
+
+    if kind_norm != "test_case":
+        md_key = ess_md_artifacts_s3_key(f"{stem}.md", user_id=user_id)
+        if md_key not in s3_deleted and _delete_s3_key_quiet(md_key):
+            s3_deleted.append(md_key)
+
+    removed = remove_document(ess, filename=name, registry=registry)
+    if not removed and entry.get("source_path"):
+        removed = remove_document(
+            ess, source_path=str(entry.get("source_path")), registry=registry
+        )
+
+    if not removed and not deleted_files and not deleted_dirs:
+        raise FileNotFoundError(f"Document not found: {name}")
+
+    return {
+        "ok": True,
+        "filename": name,
+        "kind": kind_norm,
+        "removed_from_list": bool(removed),
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "s3_deleted": s3_deleted,
+    }

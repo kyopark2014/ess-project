@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 
-type DocKind = "regulation" | "project";
+type DocKind = "regulation" | "project" | "drawing";
 
 interface Props {
   onClose: () => void;
@@ -11,14 +11,20 @@ interface Props {
 }
 
 export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingKind, setPendingKind] = useState<DocKind | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{
+    current: number;
+    total: number;
+    name: string;
+  } | null>(null);
   const [foundationModelParser, setFoundationModelParser] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const regulationInputRef = useRef<HTMLInputElement | null>(null);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
+  const drawingInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,13 +59,27 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
   }, [busy, onClose]);
 
   async function uploadDoc(file: File, kind: DocKind) {
+    if (kind === "project") {
+      await api.uploadEssProjectFile(file);
+    } else if (kind === "drawing") {
+      await api.uploadEssDrawingFile(file);
+    } else {
+      await api.uploadEssRawFile(file);
+    }
+  }
+
+  async function uploadDocs(files: File[], kind: DocKind) {
     await api.putEssConfig({
       foundation_model_parser_enabled: foundationModelParser,
     });
-    if (kind === "project") {
-      await api.uploadEssProjectFile(file);
-    } else {
-      await api.uploadEssRawFile(file);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setUploadProgress({
+        current: i + 1,
+        total: files.length,
+        name: file.name,
+      });
+      await uploadDoc(file, kind);
     }
   }
 
@@ -71,12 +91,14 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
         foundation_model_parser_enabled: foundationModelParser,
       });
 
-      if (pendingFile && pendingKind) {
-        await uploadDoc(pendingFile, pendingKind);
-        setPendingFile(null);
+      if (pendingFiles.length > 0 && pendingKind) {
+        await uploadDocs(pendingFiles, pendingKind);
+        setPendingFiles([]);
         setPendingKind(null);
+        setUploadProgress(null);
         if (regulationInputRef.current) regulationInputRef.current.value = "";
         if (projectInputRef.current) projectInputRef.current.value = "";
+        if (drawingInputRef.current) drawingInputRef.current.value = "";
         onClose();
         onFileUploaded?.();
         return;
@@ -92,32 +114,50 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
 
   async function handlePickFile(fileList: FileList | null, kind: DocKind) {
     if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
-    const inputRef = kind === "project" ? projectInputRef : regulationInputRef;
+    const files = Array.from(fileList);
+    const inputRef =
+      kind === "project"
+        ? projectInputRef
+        : kind === "drawing"
+          ? drawingInputRef
+          : regulationInputRef;
     if (inputRef.current) inputRef.current.value = "";
 
-    setPendingFile(file);
+    setPendingFiles(files);
     setPendingKind(kind);
     setError(null);
     setBusy(true);
     try {
-      await uploadDoc(file, kind);
-      setPendingFile(null);
+      await uploadDocs(files, kind);
+      setPendingFiles([]);
       setPendingKind(null);
+      setUploadProgress(null);
       onClose();
       onFileUploaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setUploadProgress(null);
     }
   }
 
   function renderDocSection(kind: DocKind) {
     const label =
-      kind === "project" ? "Project 문서 추가" : "Regulation 문서 추가";
-    const inputRef = kind === "project" ? projectInputRef : regulationInputRef;
-    const isPending = pendingKind === kind && pendingFile;
+      kind === "project"
+        ? "Project 문서 추가"
+        : kind === "drawing"
+          ? "Drawing 문서 추가"
+          : "Regulation 문서 추가";
+    const inputRef =
+      kind === "project"
+        ? projectInputRef
+        : kind === "drawing"
+          ? drawingInputRef
+          : regulationInputRef;
+    const sectionFiles =
+      pendingKind === kind ? pendingFiles : [];
+    const isPending = sectionFiles.length > 0;
 
     return (
       <div className="ess-configure-doc-section">
@@ -126,6 +166,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
           <input
             ref={inputRef}
             type="file"
+            multiple
             className="ess-configure-file-input"
             accept=".pdf,.md,.txt,.markdown,.rst,.docx,.pptx,.csv,.json,.html,.htm,application/pdf,text/plain,text/markdown"
             disabled={busy}
@@ -145,23 +186,32 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
           </div>
           {isPending ? (
             <ul className="ess-configure-docs-list">
-              <li>
-                <span className="ess-configure-docs-name">
-                  {pendingFile.name}
-                </span>
-                <span className="ess-configure-docs-meta">
-                  {(pendingFile.size / 1024).toFixed(1)} KB
-                </span>
-              </li>
+              {sectionFiles.map((file) => (
+                <li key={`${file.name}-${file.size}-${file.lastModified}`}>
+                  <span className="ess-configure-docs-name">{file.name}</span>
+                  <span className="ess-configure-docs-meta">
+                    {(file.size / 1024).toFixed(1)} KB
+                  </span>
+                </li>
+              ))}
             </ul>
           ) : (
             <p className="ess-configure-docs-empty">
-              파일을 선택하면 저장 후 Sync를 수행합니다.
+              파일을 선택하면 저장 후 Sync를 수행합니다. (Ctrl/Cmd 또는 Shift로
+              여러 파일 선택 가능)
             </p>
           )}
         </div>
       </div>
     );
+  }
+
+  function primaryButtonLabel(): string {
+    if (!busy) return "저장";
+    if (uploadProgress) {
+      return `업로드 중 (${uploadProgress.current}/${uploadProgress.total})…`;
+    }
+    return "저장 중…";
   }
 
   return createPortal(
@@ -194,6 +244,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
 
             {renderDocSection("regulation")}
             {renderDocSection("project")}
+            {renderDocSection("drawing")}
           </>
         )}
         {error ? (
@@ -216,7 +267,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
             disabled={busy || loading}
             onClick={() => void handleSave()}
           >
-            {busy ? "저장 중…" : "저장"}
+            {primaryButtonLabel()}
           </button>
         </div>
       </div>

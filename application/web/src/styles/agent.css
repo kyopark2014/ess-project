@@ -2225,6 +2225,28 @@ button.config-popover-choice.is-selected {
   cursor: not-allowed;
 }
 
+.ess-doc-list-btn-danger {
+  color: #f85149;
+  border-color: rgba(248, 81, 73, 0.45);
+}
+
+.ess-doc-list-btn-danger:hover:not(:disabled) {
+  border-color: #f85149;
+  color: #ff7b72;
+  background: rgba(248, 81, 73, 0.08);
+}
+
+.ess-doc-list-btn-success {
+  color: #3fb950;
+  border-color: rgba(63, 185, 80, 0.45);
+}
+
+.ess-doc-list-btn-success:hover:not(:disabled) {
+  border-color: #3fb950;
+  color: #56d364;
+  background: rgba(63, 185, 80, 0.08);
+}
+
 .ess-configure-section-label {
   margin: 4px 0 8px;
   font-size: 11px;
