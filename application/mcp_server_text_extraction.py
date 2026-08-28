@@ -98,7 +98,7 @@ def _get_chat():
         region_name=region,
         config=Config(
             retries={"max_attempts": 30},
-            read_timeout=300,
+            read_timeout=600,
         ),
     )
 

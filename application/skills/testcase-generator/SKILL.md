@@ -29,14 +29,27 @@ Markdown 규격 문서에서 **검증 가능한 요구사항**을 추출해 Exce
 ### 1. 입력 확인
 
 사용자가 준 **markdown 파일 절대/상대 경로**를 확인한다.
-(ESS Regulations의 **복사**로 얻은 `md_path`를 그대로 써도 된다.)
+(ESS Regulations의 **복사**로 얻은 `md_path` / `md_local_artifacts`를 그대로 써도 된다.)
+
+**경로 우선순위 (중요 — CloudFront URL 사용 금지):**
+
+1. **`{SESSION_STORAGE}/{user}/artifacts/md/{stem}.md`** — ESS Sync 후 artifacts 미러 (권장)
+2. **`{SESSION_STORAGE}/{user}/ess/out/converted/{stem}.md`** — converted ESS markdown
+3. **`{SESSION_STORAGE}/{user}/ess/regulations/{stem}.md`** — regulations 폴더 원본 md
+4. S3 직접: `boto3` / `aws s3 cp`로 `artifacts/{project}/{user}/md/{stem}.md` 다운로드
+
+**하지 말 것:**
+
+- `get_raw_text` / `get_markdown`에 CloudFront URL 넣기 (403·Playwright 오류)
+- 존재하지 않는 경로 추측
 
 ```bash
-# 예
-/Users/.../.session_storage/ksdyb/ess/regulations/NFPA855_2023.md
+# 예 (로컬 session storage)
+.../application/.session_storage/ksdyb/artifacts/md/NFPA855_2023.md
+.../application/.session_storage/ksdyb/ess/out/converted/s9540_3_2025_1.md
 ```
 
-파일이 없으면 중단하고 경로를 확인한다.
+파일이 없으면 `read_file` / `bash ls`로 위 경로를 확인한 뒤, S3에서 로컬로 복사한다.
 
 ### 2. Markdown 읽기 & 테스트케이스 추출
 
@@ -57,7 +70,7 @@ Markdown 규격 문서에서 **검증 가능한 요구사항**을 추출해 Exce
    - **나쁜 예:** `도면·시방서가 요구사항을 충족함`, `AHJ 승인 완료`
 6. **판정결과**·**비고**는 비워 둔다 (엑셀에서 사용자가 선택·기입).
 7. 서문·저작권·목차·정의만 나열된 비검증 문장은 제외한다. (정의 조항이 설치 의무를 포함하면 포함)
-8. 문서가 매우 길면 사용자가 지정한 장/절을 우선하고, 범위 미지정 시 Chapter/주요 Construction·Performance 요구부터 추출한 뒤 행 수를 보고한다.
+8. 문서가 매우 길면 사용자가 지정한 장/절을 우선하고, 범위 미지정 시 Chapter/주요 Construction·Performance 요구부터 추출한 뒤 행 수를 보고한다. **한 번의 LLM 호출로 전체 문서를 처리하지 말고**, 장/절 단위로 cases JSON을 나눠 작성한 뒤 병합한다.
 
 JSON 초안을 `ARTIFACTS_DIR/tc/` 아래에 저장한다.
 

@@ -146,6 +146,7 @@ export interface EssDocument {
   display_name?: string;
   md_file?: string;
   md_path?: string;
+  md_local_artifacts?: string | null;
   source_path?: string;
   status?: string;
   bytes?: number;

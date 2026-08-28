@@ -38,6 +38,9 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.checkpoint.memory import MemorySaver
 
+# Long testcase extraction on large standards can exceed 5 minutes.
+BEDROCK_READ_TIMEOUT = 600
+
 try:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     SQLITE_CHECKPOINTER_AVAILABLE = True
@@ -760,7 +763,7 @@ def _build_openai_chat(profile: dict, max_output_tokens: int):
         region_name=bedrock_region,
         config=Config(
             retries={"max_attempts": 30},
-            read_timeout=300,
+            read_timeout=BEDROCK_READ_TIMEOUT,
         ),
     )
     chat = ChatBedrock(
@@ -858,7 +861,7 @@ def get_chat():
             region_name=bedrock_region,
             config=Config(
                 retries={"max_attempts": 30},
-                read_timeout=300,
+                read_timeout=BEDROCK_READ_TIMEOUT,
             ),
         )
         converse_kwargs = {
@@ -890,7 +893,7 @@ def get_chat():
             retries = {
                 'max_attempts': 30
             },
-            read_timeout=300
+            read_timeout=BEDROCK_READ_TIMEOUT
         )
     )
 
