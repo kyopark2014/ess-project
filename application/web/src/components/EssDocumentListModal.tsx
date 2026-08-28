@@ -35,9 +35,9 @@ function documentSublineParts(
   extra: Array<string | null | undefined> = [],
 ): string {
   const timestamp =
-    doc.status === "extracted" || doc.status === "saved"
-      ? formatCreatedAt(doc.extracted_at) || formatCreatedAt(doc.created_at)
-      : formatCreatedAt(doc.created_at);
+    formatCreatedAt(doc.updated_at) ||
+    formatCreatedAt(doc.extracted_at) ||
+    formatCreatedAt(doc.created_at);
   const parts = [timestamp, ...extra, formatBytes(doc.bytes)].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : "—";
 }
