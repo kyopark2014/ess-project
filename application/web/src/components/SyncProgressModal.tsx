@@ -118,17 +118,17 @@ export function SyncProgressModal({
             </div>
           )}
 
-          {busy && pct !== null && (
+          {busy && (fileLabel || pageLabel || pct !== null) && (
             <div
               className="sync-progress-bar"
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={pct}
+              aria-valuenow={pct ?? 0}
             >
               <div
                 className="sync-progress-bar-fill"
-                style={{ width: `${pct}%` }}
+                style={{ width: `${pct ?? 0}%` }}
               />
             </div>
           )}
