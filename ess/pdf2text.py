@@ -25,8 +25,10 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -69,6 +71,37 @@ _PAGE_HEADING_RE = re.compile(r"^## Page (\d+)\s*$", re.MULTILINE)
 _EXTRACTED_NAME = "extracted.md"
 _EXTRACTION_FAIL = "텍스트를 추출하지 못하였습니다."
 _MAX_LLM_ATTEMPTS = 3
+_PAGE_RESULT_SUFFIX = ".result.md"
+_LLM_SEMAPHORE: threading.Semaphore | None = None
+_LLM_SEMAPHORE_LOCK = threading.Lock()
+
+
+def _page_workers() -> int:
+    raw = (os.environ.get("ESS_SYNC_PAGE_WORKERS") or "4").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 4
+
+
+def _llm_concurrency() -> int:
+    raw = (os.environ.get("ESS_SYNC_LLM_CONCURRENCY") or "4").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 4
+
+
+def _get_llm_semaphore() -> threading.Semaphore:
+    global _LLM_SEMAPHORE
+    with _LLM_SEMAPHORE_LOCK:
+        if _LLM_SEMAPHORE is None:
+            _LLM_SEMAPHORE = threading.Semaphore(_llm_concurrency())
+        return _LLM_SEMAPHORE
+
+
+def _page_result_path(pages_dir: Path, page_num: int) -> Path:
+    return pages_dir / f"page_{page_num:03d}{_PAGE_RESULT_SUFFIX}"
 
 
 def _emit_ess_progress(
@@ -79,11 +112,15 @@ def _emit_ess_progress(
     file_i: int | None = None,
     file_n: int | None = None,
     detail: str = "",
+    aggregated: bool = False,
 ) -> None:
     """Print a structured progress line for ESS Sync UI / logs.
 
     Format::
-        [ess progress] name="…" fi=… fn=… p=… pn=… pct=… | human label
+        [ess progress] name="…" fi=… fn=… p=… pn=… pct=… agg=1 | human label
+
+    When *aggregated* is True, ``p`` is the count of completed pages (not the
+    page currently being processed).
     """
     pct: int | None = None
     if page is not None and page_n and page_n > 0:
@@ -101,12 +138,17 @@ def _emit_ess_progress(
         parts.append(f"pn={page_n}")
     if pct is not None:
         parts.append(f"pct={pct}")
+    if aggregated:
+        parts.append("agg=1")
 
     label_bits = [file_name]
     if file_i is not None and file_n is not None:
         label_bits.append(f"파일 {file_i}/{file_n}")
     if page is not None and page_n is not None:
-        label_bits.append(f"페이지 {page}/{page_n}")
+        if aggregated:
+            label_bits.append(f"완료 {page}/{page_n} 페이지")
+        else:
+            label_bits.append(f"페이지 {page}/{page_n}")
     if pct is not None:
         label_bits.append(f"{pct}%")
     if detail:
@@ -408,12 +450,16 @@ def list_image_files(folder: Path) -> list[Path]:
     return out
 
 
-def _extract_image_markdown(image_path: Path) -> str:
+def _extract_image_markdown(image_path: Path, *, use_llm_semaphore: bool = False) -> str:
     """One page image → Markdown via Bedrock multimodal (built-in helpers)."""
     with open(image_path, "rb") as f:
         raw = f.read()
     b64 = _prepare_image_base64(raw)
-    raw_text = _extract_text_with_llm(b64, LLM_PROMPT)
+    if use_llm_semaphore:
+        with _get_llm_semaphore():
+            raw_text = _extract_text_with_llm(b64, LLM_PROMPT)
+    else:
+        raw_text = _extract_text_with_llm(b64, LLM_PROMPT)
     return _parse_result(raw_text).strip()
 
 
@@ -499,17 +545,178 @@ def _append_page_md(md_path: Path, page_num: int, body: str) -> None:
         os.fsync(f.fileno())
 
 
+def _page_body_from_result(result_path: Path) -> str | None:
+    """Return successful page body from a per-page temp file, or None."""
+    if not result_path.is_file() or result_path.stat().st_size == 0:
+        return None
+    body = result_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not body or any(m in body for m in _FAILED_PAGE_MARKERS):
+        return None
+    return body
+
+
+def _pages_done_from_temps(pages_dir: Path, total_pages: int) -> set[int]:
+    done: set[int] = set()
+    for page_num in range(1, total_pages + 1):
+        if _page_body_from_result(_page_result_path(pages_dir, page_num)):
+            done.add(page_num)
+    return done
+
+
+def _collect_done_pages(
+    extracted_md: Path, pages_dir: Path, total_pages: int
+) -> set[int]:
+    """Pages with successful extraction in ``extracted.md`` or per-page temps."""
+    done = _pages_done_in_md(extracted_md)
+    done.update(_pages_done_from_temps(pages_dir, total_pages))
+    return done
+
+
+def _write_page_result(pages_dir: Path, page_num: int, body: str) -> None:
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    path = _page_result_path(pages_dir, page_num)
+    path.write_text(body.strip() + "\n", encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _read_page_body(
+    pages_dir: Path, extracted_md: Path, page_num: int
+) -> str | None:
+    result_path = _page_result_path(pages_dir, page_num)
+    if result_path.is_file() and result_path.stat().st_size > 0:
+        body = result_path.read_text(encoding="utf-8", errors="replace").strip()
+        if body:
+            return body
+    if not extracted_md.is_file():
+        return None
+    text = extracted_md.read_text(encoding="utf-8", errors="replace")
+    pattern = re.compile(
+        rf"(^## Page {page_num}\s*\n)(.*?)(?=^## Page \d+\s*$|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    section_body = (match.group(2) or "").strip()
+    if not section_body or any(m in section_body for m in _FAILED_PAGE_MARKERS):
+        return None
+    return section_body
+
+
+def _merge_page_results_to_extracted(
+    extracted_md: Path, pages_dir: Path, total_pages: int
+) -> None:
+    """Assemble ``extracted.md`` from per-page temp files (page order)."""
+    sections: list[str] = []
+    for page_num in range(1, total_pages + 1):
+        body = _read_page_body(pages_dir, extracted_md, page_num)
+        if not body:
+            body = "> (빈 페이지)"
+        sections.append(f"## Page {page_num}\n\n{body.strip()}\n")
+    extracted_md.parent.mkdir(parents=True, exist_ok=True)
+    extracted_md.write_text("".join(sections), encoding="utf-8")
+    with open(extracted_md, "a", encoding="utf-8") as f:
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _extract_pages_parallel(
+    *,
+    path: Path,
+    images: list[str],
+    img_dir: Path,
+    extracted_md: Path,
+    done: set[int],
+    total_pages: int,
+    file_i: int | None,
+    file_n: int | None,
+) -> set[int]:
+    """Extract pending pages in parallel; write per-page temp files."""
+    pending = [i for i in range(1, total_pages + 1) if i not in done]
+    if not pending:
+        return done
+
+    workers = min(_page_workers(), len(pending))
+    print(
+        f"  [foundation model] parallel extract: {len(pending)} page(s), "
+        f"workers={workers}, llm_concurrency={_llm_concurrency()}",
+        flush=True,
+    )
+    progress_lock = threading.Lock()
+    done_count = len(done)
+
+    def _process_page(page_num: int) -> tuple[int, str]:
+        img_path = Path(images[page_num - 1])
+        print(
+            f"  [foundation model] [{page_num}/{total_pages}] "
+            f"LLM extract {img_path.name}",
+            flush=True,
+        )
+        try:
+            body = _extract_image_markdown(img_path, use_llm_semaphore=True)
+        except Exception as exc:
+            body = f"> (추출 오류: {exc})"
+        if not body:
+            body = "> (빈 페이지)"
+        _write_page_result(img_dir, page_num, body)
+        return page_num, body
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_process_page, page_num): page_num for page_num in pending}
+        for fut in as_completed(futures):
+            page_num, body = fut.result()
+            with progress_lock:
+                if page_num in done:
+                    continue
+                if body and not any(m in body for m in _FAILED_PAGE_MARKERS):
+                    done.add(page_num)
+                done_count = len(done)
+                _emit_ess_progress(
+                    path.name,
+                    page=done_count,
+                    page_n=total_pages,
+                    file_i=file_i,
+                    file_n=file_n,
+                    detail="페이지 완료",
+                    aggregated=True,
+                )
+
+    _merge_page_results_to_extracted(extracted_md, img_dir, total_pages)
+    return done
+
+
+def ensure_foundation_extracted_merged(work_dir: Path) -> None:
+    """Merge per-page temps into ``extracted.md`` when every page is done."""
+    pages_dir = work_dir / "pages"
+    extracted = work_dir / _EXTRACTED_NAME
+    if not pages_dir.is_dir():
+        return
+    pngs = sorted(pages_dir.glob("page_*.png"))
+    if not pngs:
+        return
+    total_pages = len(pngs)
+    done = _collect_done_pages(extracted, pages_dir, total_pages)
+    if len(done) >= total_pages:
+        _merge_page_results_to_extracted(extracted, pages_dir, total_pages)
+
+
 def pdf_to_text_foundation_model(
     path: Path,
     *,
     work_dir: Path | None = None,
     dpi: int = 150,
     keep_images: bool = False,
+    parallel_pages: bool = True,
+    file_i: int | None = None,
+    file_n: int | None = None,
 ) -> str:
     """PDF → page images → multimodal LLM Markdown (Foundation Model Parser).
 
-    Progress is written to ``work_dir/extracted.md`` after each page. Re-runs
-    skip pages already present in that file (and reuse existing PNGs).
+    When *parallel_pages* is True, each page is written to
+    ``pages/page_NNN.result.md`` and merged into ``extracted.md`` when done.
+    Re-runs skip finished pages (temps + ``extracted.md``) and reuse PNGs.
     """
     path = Path(path).expanduser().resolve()
     if not path.is_file():
@@ -535,66 +742,90 @@ def pdf_to_text_foundation_model(
             raise ValueError(f"PDF에서 페이지 이미지를 만들지 못했습니다: {path}")
 
         total_pages = len(images)
-        done = _pages_done_in_md(extracted_md)
+        done = _collect_done_pages(extracted_md, img_dir, total_pages)
         if done and len(done) >= total_pages:
             print(
                 f"  [foundation model] skip LLM — all {total_pages} page(s) "
                 f"already in {extracted_md.name}",
                 flush=True,
             )
+            _merge_page_results_to_extracted(extracted_md, img_dir, total_pages)
+            ensure_foundation_extracted_merged(work_dir)
             _emit_ess_progress(
                 path.name,
                 page=total_pages,
                 page_n=total_pages,
+                file_i=file_i,
+                file_n=file_n,
                 detail="이미 추출됨 (skip)",
+                aggregated=parallel_pages,
             )
             return extracted_md.read_text(encoding="utf-8", errors="replace").strip()
 
         if done:
             print(
                 f"  [foundation model] resume: {len(done)}/{total_pages} page(s) "
-                f"already in {extracted_md.name}",
+                f"already extracted",
                 flush=True,
             )
             _emit_ess_progress(
                 path.name,
                 page=len(done),
                 page_n=total_pages,
+                file_i=file_i,
+                file_n=file_n,
                 detail=f"이어하기 {len(done)}/{total_pages}",
+                aggregated=parallel_pages,
             )
 
-        for i, img in enumerate(images, 1):
-            if i in done:
+        if parallel_pages:
+            done = _extract_pages_parallel(
+                path=path,
+                images=images,
+                img_dir=img_dir,
+                extracted_md=extracted_md,
+                done=done,
+                total_pages=total_pages,
+                file_i=file_i,
+                file_n=file_n,
+            )
+        else:
+            for i, img in enumerate(images, 1):
+                if i in done:
+                    print(
+                        f"  [foundation model] [{i}/{total_pages}] skip (already done)",
+                        flush=True,
+                    )
+                    continue
+                img_path = Path(img)
                 print(
-                    f"  [foundation model] [{i}/{total_pages}] skip (already in md)",
+                    f"  [foundation model] [{i}/{total_pages}] LLM extract {img_path.name}",
                     flush=True,
                 )
-                continue
-            img_path = Path(img)
-            print(
-                f"  [foundation model] [{i}/{total_pages}] LLM extract {img_path.name}",
-                flush=True,
-            )
-            _emit_ess_progress(
-                path.name,
-                page=i,
-                page_n=total_pages,
-                detail="LLM 추출 중",
-            )
-            try:
-                body = _extract_image_markdown(img_path)
-            except Exception as exc:
-                body = f"> (추출 오류: {exc})"
-            if not body:
-                body = "> (빈 페이지)"
-            _append_page_md(extracted_md, i, body)
-            done.add(i)
-            _emit_ess_progress(
-                path.name,
-                page=i,
-                page_n=total_pages,
-                detail="페이지 완료",
-            )
+                _emit_ess_progress(
+                    path.name,
+                    page=i,
+                    page_n=total_pages,
+                    file_i=file_i,
+                    file_n=file_n,
+                    detail="LLM 추출 중",
+                )
+                try:
+                    body = _extract_image_markdown(img_path)
+                except Exception as exc:
+                    body = f"> (추출 오류: {exc})"
+                if not body:
+                    body = "> (빈 페이지)"
+                _append_page_md(extracted_md, i, body)
+                done.add(i)
+                _emit_ess_progress(
+                    path.name,
+                    page=i,
+                    page_n=total_pages,
+                    file_i=file_i,
+                    file_n=file_n,
+                    detail="페이지 완료",
+                )
 
         if not extracted_md.is_file() or extracted_md.stat().st_size == 0:
             raise ValueError(f"Foundation Model Parser가 텍스트를 추출하지 못했습니다: {path}")
@@ -608,7 +839,10 @@ def pdf_to_text_foundation_model(
             path.name,
             page=total_pages,
             page_n=total_pages,
+            file_i=file_i,
+            file_n=file_n,
             detail="변환 완료",
+            aggregated=parallel_pages,
         )
         return extracted_md.read_text(encoding="utf-8", errors="replace").strip()
     finally:
@@ -624,6 +858,9 @@ def pdf_to_text(
     use_foundation_model: bool = False,
     work_dir: Path | None = None,
     dpi: int = 150,
+    parallel_pages: bool = True,
+    file_i: int | None = None,
+    file_n: int | None = None,
 ) -> str:
     """Return page-sectioned Markdown/plain text for a PDF.
 
@@ -643,7 +880,14 @@ def pdf_to_text(
             else None
         )
         try:
-            return pdf_to_text_foundation_model(src, work_dir=work_dir, dpi=dpi)
+            return pdf_to_text_foundation_model(
+                src,
+                work_dir=work_dir,
+                dpi=dpi,
+                parallel_pages=parallel_pages,
+                file_i=file_i,
+                file_n=file_n,
+            )
         except Exception as exc:
             if partial and partial.stat().st_size > 0:
                 print(

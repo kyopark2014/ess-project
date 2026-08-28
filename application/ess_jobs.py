@@ -88,6 +88,7 @@ class EssJobState:
     progress_page: int | None = None
     progress_page_n: int | None = None
     progress_pct: int | None = None
+    progress_aggregated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +109,7 @@ class EssJobState:
                 "page": self.progress_page,
                 "page_n": self.progress_page_n,
                 "pct": self.progress_pct,
+                "aggregated": self.progress_aggregated,
             },
         }
 
@@ -155,6 +157,7 @@ def _get_or_create(user_id: str) -> EssJobState:
                 state.progress_page = prog.get("page")  # type: ignore[assignment]
                 state.progress_page_n = prog.get("page_n")  # type: ignore[assignment]
                 state.progress_pct = prog.get("pct")  # type: ignore[assignment]
+                state.progress_aggregated = bool(prog.get("aggregated"))
             if state.status in ("queued", "running") and state.pid:
                 if not _pid_alive(int(state.pid)):
                     state.status = "error"
@@ -299,6 +302,8 @@ def _apply_progress_line(state: "EssJobState", text: str) -> None:
         km = re.search(rf"\b{key}=(\d+)\b", meta)
         if km:
             fields[key] = km.group(1)
+    if re.search(r"\bagg=1\b", meta):
+        fields["agg"] = "1"
 
     if "name" in fields:
         state.progress_file = fields["name"]
@@ -316,6 +321,7 @@ def _apply_progress_line(state: "EssJobState", text: str) -> None:
         state.progress_pct = int(
             round(100.0 * state.progress_page / state.progress_page_n)
         )
+    state.progress_aggregated = fields.get("agg") == "1"
 
 
 def _sync_error_tail(stdout: str, returncode: int) -> str:

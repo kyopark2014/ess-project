@@ -100,12 +100,23 @@ def _file_key(path: Path) -> str:
 def _load_settings(user_id: str) -> dict:
     path = _session_storage() / _safe_user(user_id) / "settings.json"
     if not path.is_file():
-        return {"ess_foundation_model_parser_enabled": True}
+        return {
+            "ess_foundation_model_parser_enabled": True,
+            "ess_parallel_processing_enabled": True,
+        }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"ess_foundation_model_parser_enabled": True}
-    return data if isinstance(data, dict) else {}
+        return {
+            "ess_foundation_model_parser_enabled": True,
+            "ess_parallel_processing_enabled": True,
+        }
+    if not isinstance(data, dict):
+        return {
+            "ess_foundation_model_parser_enabled": True,
+            "ess_parallel_processing_enabled": True,
+        }
+    return data
 
 
 def _load_manifest(out_dir: Path) -> dict[str, Any]:
@@ -223,6 +234,9 @@ def _pdf_to_text(
     *,
     use_foundation_model: bool = False,
     work_dir: Path | None = None,
+    parallel_pages: bool = True,
+    file_i: int | None = None,
+    file_n: int | None = None,
 ) -> str:
     from pdf2text import pdf_to_text
 
@@ -230,6 +244,9 @@ def _pdf_to_text(
         path,
         use_foundation_model=use_foundation_model,
         work_dir=work_dir,
+        parallel_pages=parallel_pages,
+        file_i=file_i,
+        file_n=file_n,
     )
 
 
@@ -238,6 +255,9 @@ def _doc_to_markdown_body(
     *,
     use_foundation_model: bool = False,
     pdf_work_dir: Path | None = None,
+    parallel_pages: bool = True,
+    file_i: int | None = None,
+    file_n: int | None = None,
 ) -> str | None:
     """Return markdown body for staging, or None if unsupported."""
     suffix = src.suffix.lower()
@@ -250,6 +270,9 @@ def _doc_to_markdown_body(
             src,
             use_foundation_model=use_foundation_model,
             work_dir=pdf_work_dir,
+            parallel_pages=parallel_pages,
+            file_i=file_i,
+            file_n=file_n,
         ).strip()
         if not body:
             raise ValueError(f"PDF에서 텍스트를 추출하지 못했습니다: {src}")
@@ -261,7 +284,7 @@ def _incomplete_foundation_pdfs(
     stage: Path, *, candidates: list[Path] | None = None
 ) -> list[Path]:
     """PDFs with partial ``.pdf_pages/.../extracted.md`` that should be resumed."""
-    from pdf2text import _EXTRACTED_NAME, _pages_done_in_md
+    from pdf2text import _EXTRACTED_NAME, _collect_done_pages
 
     root = stage / ".pdf_pages"
     if not root.is_dir():
@@ -327,7 +350,7 @@ def _incomplete_foundation_pdfs(
         page_pngs = sorted(pages_dir.glob("page_*.png"))
         if not page_pngs:
             continue
-        done = _pages_done_in_md(extracted)
+        done = _collect_done_pages(extracted, pages_dir, len(page_pngs))
         if len(done) >= len(page_pngs):
             continue
         key = str(src.resolve())
@@ -544,22 +567,23 @@ def _foundation_extraction_complete(pdf_work: Path | None) -> bool:
     """True when ``extracted.md`` has successful text for every page PNG."""
     if pdf_work is None or not pdf_work.is_dir():
         return False
-    from pdf2text import _EXTRACTED_NAME, _pages_done_in_md
+    from pdf2text import _EXTRACTED_NAME, _collect_done_pages
 
     pages_dir = pdf_work / "pages"
     extracted = pdf_work / _EXTRACTED_NAME
-    if not pages_dir.is_dir() or not extracted.is_file():
+    if not pages_dir.is_dir():
         return False
     pngs = sorted(pages_dir.glob("page_*.png"))
     if not pngs:
         return False
-    done = _pages_done_in_md(extracted)
+    done = _collect_done_pages(extracted, pages_dir, len(pngs))
     return len(done) >= len(pngs)
 
 
 def _read_extracted_markdown(pdf_work: Path) -> str:
-    from pdf2text import _EXTRACTED_NAME
+    from pdf2text import _EXTRACTED_NAME, ensure_foundation_extracted_merged
 
+    ensure_foundation_extracted_merged(pdf_work)
     return (pdf_work / _EXTRACTED_NAME).read_text(
         encoding="utf-8", errors="replace"
     ).strip()
@@ -571,6 +595,7 @@ def _stage_docs_as_markdown(
     *,
     user_id: str,
     use_foundation_model: bool = False,
+    parallel_pages: bool = True,
 ) -> dict[str, str]:
     """Convert docs and write ``{stem}.md`` / ``{stem}.json`` next to each source.
 
@@ -680,6 +705,9 @@ def _stage_docs_as_markdown(
                 src,
                 use_foundation_model=use_foundation_model,
                 pdf_work_dir=pdf_work,
+                parallel_pages=parallel_pages,
+                file_i=idx,
+                file_n=len(files),
             )
         except Exception as exc:
             print(f"  WARNING: failed to convert {src.name}: {exc}", flush=True)
@@ -734,6 +762,7 @@ def sync_user(
     ess_root, docs_dir, projects_dir, drawings_dir, out_dir, converted = _ess_dirs(user_id)
     settings = _load_settings(user_id)
     use_fmp = bool(settings.get("ess_foundation_model_parser_enabled", True))
+    use_parallel = bool(settings.get("ess_parallel_processing_enabled", True))
 
     regulation_files = _list_source_docs(docs_dir)
     project_files = _list_source_docs(projects_dir)
@@ -842,6 +871,15 @@ def sync_user(
             "[ess sync] Foundation Model Parser enabled — PDF→images→LLM",
             flush=True,
         )
+    if use_parallel and use_fmp:
+        print(
+            "[ess sync] Parallel page processing enabled "
+            f"(page_workers={os.environ.get('ESS_SYNC_PAGE_WORKERS', '4')}, "
+            f"llm_concurrency={os.environ.get('ESS_SYNC_LLM_CONCURRENCY', '4')})",
+            flush=True,
+        )
+    elif use_fmp:
+        print("[ess sync] Parallel page processing disabled — sequential pages", flush=True)
 
     print(
         f"[ess sync] staging {len(to_stage)} file(s) → regulations/projects/drawings "
@@ -853,6 +891,7 @@ def sync_user(
         converted,
         user_id=user_id,
         use_foundation_model=use_fmp,
+        parallel_pages=use_parallel and use_fmp,
     )
     if not path_map and to_stage:
         print("[ess sync] WARNING: no markdown produced", flush=True)
@@ -948,6 +987,7 @@ def sync_user(
         "user_id": user_id,
         "synced_at": synced_at,
         "foundation_model_parser_enabled": use_fmp,
+        "parallel_processing_enabled": use_parallel,
         "fingerprint": fp,
         "ess_dir": str(ess_root),
         "docs_dir": str(docs_dir),
@@ -990,6 +1030,7 @@ def sync_user(
                 "file_count": len(files),
                 "markdown_files": md_count,
                 "foundation_model_parser_enabled": use_fmp,
+        "parallel_processing_enabled": use_parallel,
                 "session_ess_dir": str(ess_root),
                 "docs_dir": str(docs_dir),
                 "projects_dir": str(projects_dir),

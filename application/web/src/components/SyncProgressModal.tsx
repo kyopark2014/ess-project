@@ -8,6 +8,7 @@ export interface SyncProgressInfo {
   page?: number | null;
   page_n?: number | null;
   pct?: number | null;
+  aggregated?: boolean | null;
 }
 
 interface Props {
@@ -53,7 +54,9 @@ export function SyncProgressModal({
     typeof progress?.page === "number" &&
     typeof progress?.page_n === "number" &&
     progress.page_n > 0
-      ? `페이지 ${progress.page}/${progress.page_n}`
+      ? progress.aggregated
+        ? `완료 ${progress.page}/${progress.page_n} 페이지`
+        : `페이지 ${progress.page}/${progress.page_n}`
       : null;
   const fileLabel =
     typeof progress?.file_i === "number" &&

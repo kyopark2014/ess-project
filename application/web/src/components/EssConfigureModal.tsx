@@ -19,6 +19,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
     name: string;
   } | null>(null);
   const [foundationModelParser, setFoundationModelParser] = useState(true);
+  const [parallelProcessing, setParallelProcessing] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
         setFoundationModelParser(
           data.foundation_model_parser_enabled !== false,
         );
+        setParallelProcessing(data.parallel_processing_enabled !== false);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
@@ -71,6 +73,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
   async function uploadDocs(files: File[], kind: DocKind) {
     await api.putEssConfig({
       foundation_model_parser_enabled: foundationModelParser,
+      parallel_processing_enabled: parallelProcessing,
     });
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -89,6 +92,7 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
     try {
       await api.putEssConfig({
         foundation_model_parser_enabled: foundationModelParser,
+        parallel_processing_enabled: parallelProcessing,
       });
 
       if (pendingFiles.length > 0 && pendingKind) {
@@ -239,6 +243,18 @@ export function EssConfigureModal({ onClose, onFileUploaded }: Props) {
                 checked={foundationModelParser}
                 disabled={busy}
                 onChange={(e) => setFoundationModelParser(e.target.checked)}
+              />
+            </label>
+
+            <label className="ess-configure-toggle">
+              <span className="ess-configure-toggle-title">
+                Parallel Processing
+              </span>
+              <input
+                type="checkbox"
+                checked={parallelProcessing}
+                disabled={busy}
+                onChange={(e) => setParallelProcessing(e.target.checked)}
               />
             </label>
 

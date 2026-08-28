@@ -748,6 +748,22 @@ def set_ess_foundation_model_parser_enabled(
     return bool(settings.get("ess_foundation_model_parser_enabled", True))
 
 
+def is_ess_parallel_processing_enabled(user_id: str | None) -> bool:
+    """True when ESS sync page-parallel processing is on (default True)."""
+    return bool(
+        load_user_settings(user_id).get("ess_parallel_processing_enabled", True)
+    )
+
+
+def set_ess_parallel_processing_enabled(
+    enabled: bool, *, user_id: str | None = None
+) -> bool:
+    settings = save_user_settings(
+        user_id, ess_parallel_processing_enabled=bool(enabled)
+    )
+    return bool(settings.get("ess_parallel_processing_enabled", True))
+
+
 GRAPH_PATTERNS = ("pattern1", "pattern2", "pattern3")
 DEFAULT_GRAPH_PATTERN = "pattern1"
 
@@ -756,6 +772,8 @@ _DEFAULT_USER_SETTINGS: dict[str, object] = {
     "graph_pattern": DEFAULT_GRAPH_PATTERN,
     # ESS Configure: Foundation Model Parser (default On).
     "ess_foundation_model_parser_enabled": True,
+    # ESS Configure: parallel page extraction during Sync (default On).
+    "ess_parallel_processing_enabled": True,
 }
 
 
@@ -832,6 +850,10 @@ def load_user_settings(user_id: str | None) -> dict[str, object]:
                 settings["ess_foundation_model_parser_enabled"] = bool(
                     raw["ess_foundation_model_parser_enabled"]
                 )
+            if "ess_parallel_processing_enabled" in raw:
+                settings["ess_parallel_processing_enabled"] = bool(
+                    raw["ess_parallel_processing_enabled"]
+                )
             if "skills" in raw:
                 settings["skills"] = _normalize_string_list(raw.get("skills"))
             if "mcp_servers" in raw:
@@ -858,6 +880,8 @@ def save_user_settings(user_id: str | None, **updates: object) -> dict[str, obje
         elif key == "graph_pattern":
             settings[key] = normalize_graph_pattern(value)
         elif key == "ess_foundation_model_parser_enabled":
+            settings[key] = bool(value)
+        elif key == "ess_parallel_processing_enabled":
             settings[key] = bool(value)
         elif key == "skills":
             settings[key] = _normalize_string_list(value)

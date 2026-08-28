@@ -23,6 +23,7 @@ _MAX_MULTIPART_DOC_BYTES = 80 * 1024 * 1024  # 80 MiB
 
 class EssConfigPut(BaseModel):
     foundation_model_parser_enabled: bool | None = None
+    parallel_processing_enabled: bool | None = None
 
 
 class EssDocsPresignRequest(BaseModel):
@@ -260,6 +261,9 @@ def ess_status(request: Request) -> dict:
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
             user_id
         ),
+        "parallel_processing_enabled": utils.is_ess_parallel_processing_enabled(
+            user_id
+        ),
         "error": job.get("error"),
         "message": job.get("message"),
         "last_success_at": job.get("last_success_at"),
@@ -280,6 +284,9 @@ def get_ess_config(request: Request) -> dict:
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
             user_id
         ),
+        "parallel_processing_enabled": utils.is_ess_parallel_processing_enabled(
+            user_id
+        ),
         **_load_doc_list_payload(user_id),
     }
 
@@ -293,12 +300,20 @@ def put_ess_config(body: EssConfigPut, request: Request) -> dict:
             bool(body.foundation_model_parser_enabled),
             user_id=user_id,
         )
+    if body.parallel_processing_enabled is not None:
+        utils.set_ess_parallel_processing_enabled(
+            bool(body.parallel_processing_enabled),
+            user_id=user_id,
+        )
     return {
         "ess_dir": utils.get_user_ess_dir(user_id),
         "docs_dir": utils.ess_docs_dir(user_id),
         "raw_dir": utils.ess_docs_dir(user_id),
         "files": utils.list_ess_doc_files(user_id),
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
+            user_id
+        ),
+        "parallel_processing_enabled": utils.is_ess_parallel_processing_enabled(
             user_id
         ),
         **_load_doc_list_payload(user_id),
@@ -1280,6 +1295,9 @@ def sync_ess(
         "files": files,
         "exists": len(files) > 0,
         "foundation_model_parser_enabled": utils.is_ess_foundation_model_parser_enabled(
+            user_id
+        ),
+        "parallel_processing_enabled": utils.is_ess_parallel_processing_enabled(
             user_id
         ),
         **_load_doc_list_payload(user_id),
