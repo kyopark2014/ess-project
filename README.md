@@ -460,7 +460,7 @@ Telegram Token은 [@BotFather](https://t.me/BotFather)에서 발급 후 `install
 
 ## 실행 결과
 
-"knolewdge base" MCP를 선택한 후에 "위험저감분석(HMA)을 작성하는 방법을 설명하세요."라고 입력하면 아래와 같이 RAG를 조회하여 규격 문서를 참고로한 결과를 얻을 수 있습니다.
+"knowledge base" MCP를 선택한 후에 "위험저감분석(HMA)을 작성하는 방법을 설명하세요."라고 입력하면 아래와 같이 RAG를 조회하여 규격 문서를 참고로한 결과를 얻을 수 있습니다.
 
 <img width="835" height="726" alt="image" src="https://github.com/user-attachments/assets/245b557a-3e38-4ef1-a74d-07f826d5d031" />
 
