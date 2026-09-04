@@ -978,6 +978,25 @@ select {
   color: var(--text-secondary);
 }
 
+a.message-loaded-file-link {
+  display: inline-block;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+a.message-loaded-file-link:hover {
+  border-color: var(--accent, #58a6ff);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+a.message-loaded-file-link:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
+
 .message-loaded-file-name {
   display: block;
   overflow: hidden;

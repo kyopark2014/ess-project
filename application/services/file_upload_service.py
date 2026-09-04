@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 import uuid
 from typing import Any
 
@@ -308,3 +309,139 @@ def upload_load_file(
         "content_type": upload_result.get("content_type"),
         "mount_ready": True,
     }
+
+# Extensions rendered as HTML text/markdown viewers (not raw binary stream).
+TEXT_VIEWER_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".json",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".yml",
+    ".yaml",
+    ".xml",
+    ".rst",
+    ".html",
+    ".htm",
+}
+
+# Browser can display these inline with Content-Disposition: inline.
+INLINE_BINARY_EXTENSIONS = {
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+}
+
+TEXT_VIEWER_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _proxy_ctx():
+    from contextlib import nullcontext
+
+    return getattr(utils, "_without_env_proxies", nullcontext)()
+
+
+def read_session_upload_bytes(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    max_bytes: int | None = None,
+) -> tuple[bytes, str]:
+    """Download a Load-files object from S3. Returns (body, content_type)."""
+    safe_name = sanitize_load_filename(file_name)
+    s3_key = utils.session_upload_s3_key(safe_name, user_id=user_id)
+    if not utils.s3_bucket:
+        raise FileUploadServiceError(500, "S3 bucket is not configured")
+    try:
+        with _proxy_ctx():
+            s3_client = utils._s3_client_for_presign()
+            obj = s3_client.get_object(Bucket=utils.s3_bucket, Key=s3_key)
+            body = obj["Body"]
+            if max_bytes is not None:
+                data = body.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise FileUploadServiceError(
+                        413,
+                        f"File too large to preview (max {max_bytes} bytes)",
+                    )
+            else:
+                data = body.read()
+            content_type = (
+                obj.get("ContentType")
+                or utils._session_upload_content_type(safe_name)
+            )
+            return data, content_type
+    except FileUploadServiceError:
+        raise
+    except Exception as exc:
+        error_code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            error_code = str((response.get("Error") or {}).get("Code") or "")
+        if error_code in {"404", "NoSuchKey", "NotFound"} or "NoSuchKey" in str(exc):
+            raise FileUploadServiceError(404, f"File not found: {safe_name}") from None
+        logger.error(
+            "Error reading session upload key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        raise FileUploadServiceError(500, "Failed to read uploaded file") from None
+
+
+def stream_session_upload(
+    file_name: str,
+    user_id: str | None = None,
+    *,
+    as_attachment: bool = False,
+):
+    """Stream a Load-files object from S3 for browser open/download."""
+    from fastapi.responses import StreamingResponse
+
+    safe_name = sanitize_load_filename(file_name)
+    s3_key = utils.session_upload_s3_key(safe_name, user_id=user_id)
+    if not utils.s3_bucket:
+        raise FileUploadServiceError(500, "S3 bucket is not configured")
+    try:
+        with _proxy_ctx():
+            s3_client = utils._s3_client_for_presign()
+            obj = s3_client.get_object(Bucket=utils.s3_bucket, Key=s3_key)
+        content_type = (
+            obj.get("ContentType")
+            or utils._session_upload_content_type(safe_name)
+        )
+        if content_type in ("binary/octet-stream", "no info"):
+            content_type = utils._session_upload_content_type(safe_name)
+        disposition = "attachment" if as_attachment else "inline"
+        safe_header_name = safe_name.replace('"', "")
+        return StreamingResponse(
+            obj["Body"].iter_chunks(chunk_size=1024 * 256),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{safe_header_name}"',
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+    except FileUploadServiceError:
+        raise
+    except Exception as exc:
+        error_code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            error_code = str((response.get("Error") or {}).get("Code") or "")
+        if error_code in {"404", "NoSuchKey", "NotFound"} or "NoSuchKey" in str(exc):
+            raise FileUploadServiceError(404, f"File not found: {safe_name}") from None
+        logger.error(
+            "Error streaming session upload key=%s: %s",
+            s3_key,
+            traceback.format_exc(),
+        )
+        raise FileUploadServiceError(500, "Failed to stream uploaded file") from None
+
