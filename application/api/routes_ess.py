@@ -525,82 +525,16 @@ def get_ess_document_markdown_viewer(
         text = md_path.read_text(encoding="utf-8", errors="replace")
 
     title = html.escape(md_name)
-    # JSON-encode for safe embedding inside <script>.
-    payload = json.dumps(text, ensure_ascii=False)
     raw_link = (
         f'<a class="raw" href="{html.escape(raw_url)}" target="_blank" rel="noopener">Raw (CloudFront)</a>'
         if raw_url
         else ""
     )
-    page = f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.8.1/github-markdown.min.css" />
-  <style>
-    :root {{ color-scheme: light dark; }}
-    body {{
-      margin: 0;
-      background: #0d1117;
-      color: #e6edf3;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    }}
-    .topbar {{
-      position: sticky; top: 0; z-index: 2;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 10px 20px;
-      border-bottom: 1px solid #30363d;
-      background: rgba(13, 17, 23, 0.92);
-      backdrop-filter: blur(8px);
-    }}
-    .topbar h1 {{
-      margin: 0; font-size: 14px; font-weight: 600;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }}
-    .topbar a.raw {{
-      color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
-    }}
-    .wrap {{
-      box-sizing: border-box;
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 24px 20px 64px;
-    }}
-    .markdown-body {{
-      background: transparent;
-      color: #e6edf3;
-    }}
-    @media (prefers-color-scheme: light) {{
-      body {{ background: #ffffff; color: #1f2328; }}
-      .topbar {{ background: rgba(255,255,255,0.92); border-bottom-color: #d0d7de; }}
-      .markdown-body {{ color: #1f2328; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <h1>{title}</h1>
-    {raw_link}
-  </div>
-  <div class="wrap">
-    <article id="content" class="markdown-body">Loading…</article>
-  </div>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-  <script>
-    const source = {payload};
-    const el = document.getElementById("content");
-    try {{
-      marked.setOptions({{ gfm: true, breaks: false }});
-      el.innerHTML = marked.parse(source);
-    }} catch (err) {{
-      el.textContent = "Failed to render markdown: " + err;
-    }}
-  </script>
-</body>
-</html>
-"""
+    from application.viewer_html import build_markdown_viewer_page
+
+    page = build_markdown_viewer_page(
+        md_name, text, topbar_right_html=raw_link
+    )
     return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
 
 

@@ -1,7 +1,5 @@
 import logging
 
-import html
-import json
 from pathlib import Path
 from urllib.parse import quote
 
@@ -10,6 +8,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from application.api.routes_auth import require_user_id
+from application.viewer_html import build_text_viewer_page
 from application.services.file_upload_service import (
     INLINE_BINARY_EXTENSIONS,
     TEXT_VIEWER_EXTENSIONS,
@@ -106,111 +105,6 @@ async def load_file(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-def _text_viewer_page(file_name: str, text: str, *, as_markdown: bool) -> str:
-    title = html.escape(file_name)
-    payload = json.dumps(text, ensure_ascii=False)
-    if as_markdown:
-        body_block = """
-  <div class="wrap">
-    <article id="content" class="markdown-body">Loading…</article>
-  </div>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-  <script>
-    const source = __PAYLOAD__;
-    const el = document.getElementById("content");
-    try {
-      marked.setOptions({ gfm: true, breaks: false });
-      el.innerHTML = marked.parse(source);
-    } catch (err) {
-      el.textContent = "Failed to render markdown: " + err;
-    }
-  </script>
-""".replace("__PAYLOAD__", payload)
-        css_extra = """
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.8.1/github-markdown.min.css" />
-"""
-        body_style = """
-    .markdown-body { background: transparent; color: #e6edf3; }
-    @media (prefers-color-scheme: light) {
-      .markdown-body { color: #1f2328; }
-    }
-"""
-    else:
-        body_block = """
-  <div class="wrap">
-    <pre id="content" class="code"></pre>
-  </div>
-  <script>
-    const source = __PAYLOAD__;
-    document.getElementById("content").textContent = source;
-  </script>
-""".replace("__PAYLOAD__", payload)
-        css_extra = ""
-        body_style = """
-    pre.code {
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-"""
-
-    return f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
-  {css_extra}
-  <style>
-    :root {{ color-scheme: light dark; }}
-    body {{
-      margin: 0;
-      background: #0d1117;
-      color: #e6edf3;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    }}
-    .topbar {{
-      position: sticky; top: 0; z-index: 2;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 10px 20px;
-      border-bottom: 1px solid #30363d;
-      background: rgba(13, 17, 23, 0.92);
-      backdrop-filter: blur(8px);
-    }}
-    .topbar h1 {{
-      margin: 0; font-size: 14px; font-weight: 600;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }}
-    .topbar a.raw {{
-      color: #58a6ff; text-decoration: none; font-size: 13px; white-space: nowrap;
-    }}
-    .wrap {{
-      box-sizing: border-box;
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 24px 20px 64px;
-    }}
-    {body_style}
-    @media (prefers-color-scheme: light) {{
-      body {{ background: #ffffff; color: #1f2328; }}
-      .topbar {{ background: rgba(255,255,255,0.92); border-bottom-color: #d0d7de; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <h1>{title}</h1>
-    <a class="raw" href="/api/files/view/{quote(file_name)}?download=1">Download</a>
-  </div>
-  {body_block}
-</body>
-</html>
-"""
-
-
 @router.get("/view/{filename}")
 def view_loaded_file(
     filename: str,
@@ -221,6 +115,9 @@ def view_loaded_file(
 
     Reads from ``agentcore-sessions/{user}/upload/{filename}``. PDF/images stream
     inline; text/markdown/json render in an HTML viewer; other types download.
+
+    Viewer HTML is CSP-safe (no inline scripts / CDN) so it works under the app
+    Content-Security-Policy.
     """
     user_id = require_user_id(request)
     try:
@@ -255,7 +152,12 @@ def view_loaded_file(
             text = data.decode("utf-8", errors="replace")
 
         as_markdown = ext in {".md", ".markdown"}
-        page = _text_viewer_page(safe_name, text, as_markdown=as_markdown)
+        page = build_text_viewer_page(
+            safe_name,
+            text,
+            as_markdown=as_markdown,
+            download_href=f"/api/files/view/{quote(safe_name)}?download=1",
+        )
         return HTMLResponse(content=page, media_type="text/html; charset=utf-8")
     except FileUploadServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

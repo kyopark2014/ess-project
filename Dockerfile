@@ -41,7 +41,7 @@ RUN pip install "mcp>=2.1.1" httpx httpx2 aiosqlite awslabs.aws-documentation-mc
 RUN pip install pandas numpy
 RUN pip install pytz
 RUN pip install beautifulsoup4==4.12.3 plotly_express==0.4.1 matplotlib==3.10.0 
-RUN pip install opensearch-py requests
+RUN pip install opensearch-py requests "markdown>=3.7"
 RUN pip install uv kaleido diagrams graphviz rich colorama finance-datareader PyPDF2 pyyaml
 RUN pip install python-telegram-bot discord.py
 RUN pip install python-pptx
