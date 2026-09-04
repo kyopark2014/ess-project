@@ -552,30 +552,39 @@ export function ChatInput({
           <div className="chat-loaded-files" aria-label="로드된 파일">
             {loadedFiles.map((item) => (
               <div key={item.path} className="chat-loaded-file" title={item.path}>
-                <span className="chat-loaded-file-icon" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 16 16">
-                    <path
-                      d="M4 2.5h5.5L12 5v8.5a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5Z"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                    />
-                    <path
-                      d="M9.5 2.5V5H12"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                    />
-                  </svg>
-                </span>
-                <span className="chat-loaded-file-meta">
-                  <span className="chat-loaded-file-name">{item.name}</span>
-                  {item.size > 0 && (
-                    <span className="chat-loaded-file-size">
-                      {formatFileSize(item.size)}
-                    </span>
-                  )}
-                </span>
+                <a
+                  className="chat-loaded-file-open"
+                  href={`/api/files/view/${encodeURIComponent(item.name)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`${item.name}
+클릭하여 새 탭에서 열기`}
+                >
+                  <span className="chat-loaded-file-icon" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16">
+                      <path
+                        d="M4 2.5h5.5L12 5v8.5a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5Z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                      />
+                      <path
+                        d="M9.5 2.5V5H12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                      />
+                    </svg>
+                  </span>
+                  <span className="chat-loaded-file-meta">
+                    <span className="chat-loaded-file-name">{item.name}</span>
+                    {item.size > 0 && (
+                      <span className="chat-loaded-file-size">
+                        {formatFileSize(item.size)}
+                      </span>
+                    )}
+                  </span>
+                </a>
                 <button
                   type="button"
                   className="chat-loaded-file-remove"
@@ -593,7 +602,16 @@ export function ChatInput({
           <div className="chat-attachments" aria-label="첨부 이미지">
             {attachments.map((item) => (
               <div key={item.url} className="chat-attachment">
-                <img src={item.previewUrl} alt={item.name} />
+                <a
+                  className="chat-attachment-open"
+                  href={item.previewUrl || item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`${item.name}
+클릭하여 새 탭에서 열기`}
+                >
+                  <img src={item.previewUrl} alt={item.name} />
+                </a>
                 <button
                   type="button"
                   className="chat-attachment-remove"

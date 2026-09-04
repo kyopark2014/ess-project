@@ -1022,6 +1022,29 @@ a.message-loaded-file-link:focus-visible {
   background: rgba(255, 255, 255, 0.04);
 }
 
+a.chat-loaded-file-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+a.chat-loaded-file-open:hover .chat-loaded-file-name {
+  color: var(--accent, #58a6ff);
+  text-decoration: underline;
+}
+
+a.chat-loaded-file-open:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
+
 .chat-loaded-file-icon {
   flex-shrink: 0;
   color: var(--text-secondary);
@@ -1091,6 +1114,19 @@ a.message-loaded-file-link:focus-visible {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
 }
+
+a.chat-attachment-open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+a.chat-attachment-open:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
 
 .chat-attachment img {
   width: 100%;
