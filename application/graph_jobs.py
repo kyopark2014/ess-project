@@ -269,6 +269,24 @@ def ensure_graph_job(user_id: str, *, force: bool = False) -> dict[str, Any]:
     return get_job_status(user_id)
 
 
+def _build_graph_embeddings(user_id: str) -> None:
+    """Ensure node embeddings exist after pipeline (hybrid document search)."""
+    from application import utils
+    from application.graph_embeddings import maybe_build_node_embeddings
+
+    graph_json = Path(utils.get_user_graph_dir(user_id)) / "out" / "graph.json"
+    if not graph_json.is_file():
+        return
+    try:
+        emb_path = maybe_build_node_embeddings(graph_json)
+        if emb_path:
+            logger.info(
+                "Graph node embeddings built user=%s path=%s", user_id, emb_path
+            )
+    except Exception:
+        logger.exception("Graph node embeddings build failed user=%s", user_id)
+
+
 def _run_pipeline(user_id: str, force: bool = False) -> None:
     with _lock:
         state = _get_or_create(user_id)
@@ -320,6 +338,7 @@ def _run_pipeline(user_id: str, force: bool = False) -> None:
             state.updated_at = now
             _running_users.discard(user_id)
         logger.info("Graph pipeline ready for user=%s", user_id)
+        _build_graph_embeddings(user_id)
     except Exception as exc:
         with _lock:
             state = _get_or_create(user_id)

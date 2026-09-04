@@ -1747,8 +1747,10 @@ def _s3_client_for_presign():
     """S3 client for browser-safe regional, virtual-hosted presigned URLs.
 
     Global ``*.s3.amazonaws.com`` hosts often 307-redirect to the region
-    endpoint; browsers then fail the signed PUT (403/CORS). Prefer
-    virtual-hosted ``https://{bucket}.s3.{region}.amazonaws.com/...``.
+    endpoint; browsers then fail the signed PUT (403/CORS) and our API never
+    sees ``/complete``. Prefer virtual-hosted
+    ``https://{bucket}.s3.{region}.amazonaws.com/...`` via SigV4 + regional
+    endpoint so the browser PUT never follows a TemporaryRedirect.
     """
     from botocore.config import Config
 
@@ -1756,6 +1758,7 @@ def _s3_client_for_presign():
     return boto3.client(
         service_name="s3",
         region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "virtual"},
@@ -1908,12 +1911,17 @@ def generate_session_upload_presigned_put(
         headers["Content-Disposition"] = "inline"
 
     try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client = _s3_client_for_presign()
         upload_url = s3_client.generate_presigned_url(
             ClientMethod="put_object",
             Params=params,
             ExpiresIn=max(60, int(expires_in)),
             HttpMethod="PUT",
+        )
+        logger.info(
+            "session upload presign key=%s host=%s",
+            s3_key,
+            parse.urlparse(upload_url).netloc,
         )
         return {
             "file_name": safe_name,
@@ -2033,12 +2041,17 @@ def generate_ess_docs_presigned_put(
         headers["Content-Disposition"] = "inline"
 
     try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client = _s3_client_for_presign()
         upload_url = s3_client.generate_presigned_url(
             ClientMethod="put_object",
             Params=params,
             ExpiresIn=max(60, int(expires_in)),
             HttpMethod="PUT",
+        )
+        logger.info(
+            "ess docs presign key=%s host=%s",
+            s3_key,
+            parse.urlparse(upload_url).netloc,
         )
         return {
             "file_name": safe_name,
@@ -2188,12 +2201,17 @@ def generate_ess_projects_presigned_put(
         headers["Content-Disposition"] = "inline"
 
     try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client = _s3_client_for_presign()
         upload_url = s3_client.generate_presigned_url(
             ClientMethod="put_object",
             Params=params,
             ExpiresIn=max(60, int(expires_in)),
             HttpMethod="PUT",
+        )
+        logger.info(
+            "ess projects presign key=%s host=%s",
+            s3_key,
+            parse.urlparse(upload_url).netloc,
         )
         return {
             "file_name": safe_name,
@@ -2347,12 +2365,17 @@ def generate_ess_drawings_presigned_put(
         headers["Content-Disposition"] = "inline"
 
     try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+        s3_client = _s3_client_for_presign()
         upload_url = s3_client.generate_presigned_url(
             ClientMethod="put_object",
             Params=params,
             ExpiresIn=max(60, int(expires_in)),
             HttpMethod="PUT",
+        )
+        logger.info(
+            "ess drawings presign key=%s host=%s",
+            s3_key,
+            parse.urlparse(upload_url).netloc,
         )
         return {
             "file_name": safe_name,

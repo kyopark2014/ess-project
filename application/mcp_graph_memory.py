@@ -57,8 +57,15 @@ def _extract_contents(result: dict[str, Any]) -> List[Any]:
         return contents
 
     excerpt_count = 0
+    unreadable = 0
     for source in result.get("sources") or []:
         if not source.get("readable", True):
+            unreadable += 1
+            logger.info(
+                "graph source unreadable: %s (%s)",
+                source.get("name") or source.get("path"),
+                source.get("error"),
+            )
             continue
         name = source.get("name") or Path(str(source.get("path") or "")).name or "unknown"
         labels = [str(lb) for lb in (source.get("matched_labels") or []) if lb][:8]
@@ -80,7 +87,11 @@ def _extract_contents(result: dict[str, Any]) -> List[Any]:
         if excerpt_count >= _MAX_EXCERPTS:
             break
 
-    logger.info("extracted contents: excerpts=%s", excerpt_count)
+    logger.info(
+        "extracted contents: excerpts=%s unreadable_sources=%s",
+        excerpt_count,
+        unreadable,
+    )
     return contents
 
 
@@ -150,5 +161,25 @@ def recall_graph_memory(
         return _error(f"query failed: {e}")
 
     contents = _extract_contents(result)
-    # Match mcp_memory.recall_memory(retrieve) success shape
-    return {"text": contents}
+    if contents:
+        return {"text": contents}
+
+    if result.get("message"):
+        return _error(str(result["message"]))
+
+    unreadable = [
+        s
+        for s in (result.get("sources") or [])
+        if not s.get("readable", True)
+    ]
+    if unreadable or (result.get("nodes") and not contents):
+        names = [
+            str(s.get("name") or s.get("path") or "?") for s in unreadable[:3]
+        ]
+        detail = f" ({', '.join(names)})" if names else ""
+        return _error(
+            "Knowledge Graph 노드는 찾았지만 소스 본문을 읽을 수 없습니다"
+            f"{detail}. Knowledge Graph를 다시 생성한 뒤 재시도하세요."
+        )
+
+    return {"text": []}
