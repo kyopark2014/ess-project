@@ -350,7 +350,16 @@ function AttachmentMedia({ refs }: { refs: string[] }) {
       {imageUrls.length > 0 && (
         <div className="message-images">
           {imageUrls.map((url) => (
-            <img key={url} src={url} alt="" />
+            <a
+              key={url}
+              className="message-image-link"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="클릭하여 새 탭에서 열기"
+            >
+              <img src={url} alt="" />
+            </a>
           ))}
         </div>
       )}

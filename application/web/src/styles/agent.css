@@ -954,6 +954,24 @@ select {
   gap: 8px;
 }
 
+a.message-image-link {
+  display: inline-block;
+  max-width: 100%;
+  cursor: pointer;
+  border-radius: 8px;
+  line-height: 0;
+}
+
+a.message-image-link:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+
+a.message-image-link:hover img {
+  opacity: 0.92;
+}
+
+
 .message-images img {
   max-width: 320px;
   border-radius: 8px;
