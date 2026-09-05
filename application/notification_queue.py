@@ -46,11 +46,27 @@ class QueueNotificationSink:
         if not was_streaming:
             self._q.put({"type": "markdown", "data": message})
 
-    def tool_update(self, tool_use_id: str, message: str):
+    def tool_update(
+        self,
+        tool_use_id: str,
+        message: str,
+        *,
+        mcp_server: str | None = None,
+        skill_name: str | None = None,
+    ):
         self._streaming_slot = None
         if tool_use_id not in self._tool_slots:
             self._tool_slots[tool_use_id] = object()
-        self._q.put({"type": "info", "data": message, "toolUseId": tool_use_id})
+        payload = {
+            "type": "info",
+            "data": message,
+            "toolUseId": tool_use_id,
+        }
+        if mcp_server:
+            payload["mcpServer"] = mcp_server
+        if skill_name:
+            payload["skillName"] = skill_name
+        self._q.put(payload)
 
     def register_tool(self, tool_use_id: str, name: str):
         self._tool_names[tool_use_id] = name

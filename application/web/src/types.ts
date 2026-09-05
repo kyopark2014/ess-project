@@ -16,6 +16,8 @@ export interface Task {
 export interface ToolEvent {
   type: "text" | "tool" | "tool_result" | "info";
   tool?: string;
+  mcpServer?: string;
+  skillName?: string;
   input?: unknown;
   toolUseId?: string;
   data?: string;

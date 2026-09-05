@@ -44,20 +44,56 @@ function formatToolPayload(data: string | undefined): string {
   }
 }
 
+/** Prefer explicit skillName, then fall back to get_skill_instructions input. */
+function skillNameFromEvent(event: ToolEvent): string | undefined {
+  if (event.skillName) return event.skillName;
+  if (event.tool !== "get_skill_instructions") return undefined;
+  const input = event.input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const skillName = (input as Record<string, unknown>)["skill_name"];
+  if (typeof skillName === "string" && skillName.trim()) return skillName.trim();
+  return undefined;
+}
+
+/** `Tools: {name}` or `Tools: {name} ({label})`. */
+function formatToolLabel(
+  tool?: string,
+  mcpServer?: string,
+  skillName?: string,
+): string {
+  if (!tool) return "Tools";
+  if (mcpServer) return `Tools: ${tool} (${mcpServer})`;
+  if (skillName) return `Tools: ${tool} (${skillName})`;
+  return `Tools: ${tool}`;
+}
+
+function formatToolResultLabel(
+  tool?: string,
+  mcpServer?: string,
+  skillName?: string,
+): string {
+  if (!tool) return "Tool result";
+  if (mcpServer) return `Tool result: ${tool} (${mcpServer})`;
+  if (skillName) return `Tool result: ${tool} (${skillName})`;
+  return `Tool result: ${tool}`;
+}
+
 export function ToolCallCard({ event }: Props) {
+  const skillName = skillNameFromEvent(event);
   if (event.type === "tool") {
     return (
       <details className="tool-card">
-        <summary>Tool: {event.tool}</summary>
+        <summary>{formatToolLabel(event.tool, event.mcpServer, skillName)}</summary>
         <pre>{formatToolInput(event.input)}</pre>
       </details>
     );
   }
   if (event.type === "tool_result") {
-    const label = event.tool ? `Tool result: ${event.tool}` : "Tool result";
     return (
       <details className="tool-card">
-        <summary>{label}</summary>
+        <summary>
+          {formatToolResultLabel(event.tool, event.mcpServer, skillName)}
+        </summary>
         <pre>{formatToolPayload(event.data)}</pre>
       </details>
     );
