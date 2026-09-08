@@ -7,11 +7,6 @@ import { appDataService } from "../services/appDataService";
 const TOOL_INPUT_INFO_RE = /^Tool: .+?, Input:/s;
 const TOOL_RESULT_INFO_RE = /^Tool Result: /s;
 
-
-function isPlaceholderToolId(toolUseId: string | undefined, tool: string | undefined): boolean {
-  return !toolUseId || (!!tool && toolUseId === tool);
-}
-
 function upsertToolEvent(prev: ToolEvent[], event: ToolEvent): ToolEvent[] {
   if (event.type === "info") {
     const data = event.data ?? "";
@@ -28,14 +23,9 @@ function upsertToolEvent(prev: ToolEvent[], event: ToolEvent): ToolEvent[] {
       next[idx] = event;
       return next;
     }
-    // Only upgrade a placeholder card (id missing / equal to tool name).
-    // Never replace a real toolUseId — same tool name can appear multiple times.
     if (event.type === "tool" && event.tool) {
       const byName = prev.findIndex(
-        (e) =>
-          e.type === "tool" &&
-          e.tool === event.tool &&
-          isPlaceholderToolId(e.toolUseId, e.tool),
+        (e) => e.type === "tool" && e.tool === event.tool,
       );
       if (byName >= 0) {
         const next = [...prev];
@@ -48,34 +38,6 @@ function upsertToolEvent(prev: ToolEvent[], event: ToolEvent): ToolEvent[] {
     }
   }
   return [...prev, event];
-}
-
-
-/** Prefer the timeline that kept AI text interleaved with tools. */
-function pickTimeline(local: ToolEvent[], server: ToolEvent[]): ToolEvent[] {
-  const localText = local.filter((e) => e.type === "text").length;
-  const serverText = server.filter((e) => e.type === "text").length;
-  if (localText !== serverText) {
-    return localText > serverText ? local : server;
-  }
-  return local.length >= server.length ? local : server;
-}
-
-function buildStoppedMessage(
-  localEvents: ToolEvent[],
-  startedAt: number,
-  serverEvents: ToolEvent[] = [],
-  images: string[] = [],
-): ChatFinalMessage {
-  const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-  const notice = `You stopped after ${elapsedSeconds}s`;
-  return {
-    content: notice,
-    images,
-    tool_events: pickTimeline(localEvents, serverEvents),
-    stopped: true,
-    elapsedSeconds,
-  };
 }
 
 function appendTextSegment(prev: ToolEvent[], text: string): ToolEvent[] {
@@ -219,14 +181,14 @@ export function useChatStream() {
               events: localEvents,
             }));
             streamTextRefs.current[taskId] = "";
-          } else if (event.type === "tool" || event.type === "tool_result") {
+          } else if (event.type === "tool") {
             flushTextSegment();
             localEvents = upsertToolEvent(localEvents, event as ToolEvent);
             patchStream(taskId, (s) => ({
               ...s,
               events: localEvents,
             }));
-          } else if (event.type === "info") {
+          } else if (event.type === "tool_result" || event.type === "info") {
             localEvents = upsertToolEvent(localEvents, event as ToolEvent);
             patchStream(taskId, (s) => ({
               ...s,
@@ -241,31 +203,17 @@ export function useChatStream() {
               images: [],
               tool_events: [],
             };
-                    } else if (event.type === "done") {
+          } else if (event.type === "done") {
             uiLog("chat:send done event", {
               contentLength: event.content?.length ?? 0,
               images: event.images?.length ?? 0,
               toolEvents: event.tool_events?.length ?? 0,
-              cancelled: Boolean(event.cancelled),
             });
-            // Rare race: cancel finishes and SSE yields done(cancelled) before
-            // AbortError. Treat like stop so AI text stays in the timeline.
-            if (event.cancelled) {
-              flushTextSegment();
-              finalMessage = buildStoppedMessage(
-                localEvents,
-                startedAt,
-                event.tool_events ?? [],
-                event.images ?? [],
-              );
-            } else {
-              const doneEvents = event.tool_events ?? [];
-              finalMessage = {
-                content: event.content ?? "",
-                images: event.images ?? [],
-                tool_events: doneEvents.length > 0 ? doneEvents : localEvents,
-              };
-            }
+            finalMessage = {
+              content: event.content ?? "",
+              images: event.images ?? [],
+              tool_events: event.tool_events ?? [],
+            };
           }
         }
 
@@ -285,20 +233,21 @@ export function useChatStream() {
       } catch (err) {
         if (isAbortError(err) || controller.signal.aborted) {
           flushTextSegment();
-          // If done(cancelled) already built a stopped message, keep it.
-          if (!finalMessage?.stopped) {
-            const stopped = buildStoppedMessage(localEvents, startedAt);
-            uiLog("chat:send aborted", {
-              taskId,
-              elapsedSeconds: stopped.elapsedSeconds,
-            });
-            finalMessage = stopped;
-          } else {
-            uiLog("chat:send aborted after cancelled done", {
-              taskId,
-              elapsedSeconds: finalMessage.elapsedSeconds,
-            });
-          }
+          const elapsedSeconds = Math.max(
+            1,
+            Math.round((Date.now() - startedAt) / 1000),
+          );
+          const notice = `You stopped after ${elapsedSeconds}s`;
+          uiLog("chat:send aborted", { taskId, elapsedSeconds });
+          // Keep text segments in tool_events so AI ↔ Tool order stays interleaved.
+          // Only the stop notice goes in content (rendered after the timeline).
+          finalMessage = {
+            content: notice,
+            images: [],
+            tool_events: localEvents,
+            stopped: true,
+            elapsedSeconds,
+          };
         } else {
           uiError("chat:send failed", err);
           finalMessage = {
