@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from urllib.parse import quote
+
 import logging
 import os
 import traceback
@@ -9,6 +12,21 @@ import uuid
 from typing import Any
 
 from application import utils
+
+def _content_disposition(file_name: str, *, disposition: str = "attachment") -> str:
+    """Build latin-1-safe Content-Disposition (RFC 5987 filename*)."""
+    raw = (file_name or "download").replace('"', "").replace("\r", "").replace("\n", "")
+    ascii_name = raw.encode("ascii", "ignore").decode("ascii").strip(" .") or "download"
+    ascii_name = re.sub(r"_+", "_", ascii_name).strip("._") or "download"
+    _, ext = os.path.splitext(raw)
+    if ext and not ascii_name.lower().endswith(ext.lower()):
+        base = ascii_name if ascii_name != "download" else "download"
+        ascii_name = f"{base}{ext}"
+    return (
+        f'{disposition}; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(raw)}"
+    )
+
 
 logger = logging.getLogger("file_upload_service")
 
@@ -420,12 +438,11 @@ def stream_session_upload(
         if content_type in ("binary/octet-stream", "no info"):
             content_type = utils._session_upload_content_type(safe_name)
         disposition = "attachment" if as_attachment else "inline"
-        safe_header_name = safe_name.replace('"', "")
         return StreamingResponse(
             obj["Body"].iter_chunks(chunk_size=1024 * 256),
             media_type=content_type,
             headers={
-                "Content-Disposition": f'{disposition}; filename="{safe_header_name}"',
+                "Content-Disposition": _content_disposition(safe_name, disposition=disposition),
                 "Cache-Control": "private, max-age=3600",
             },
         )

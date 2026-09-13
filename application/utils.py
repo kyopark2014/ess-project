@@ -1,3 +1,5 @@
+import re
+from urllib.parse import quote
 import logging
 import sys
 import json
@@ -2750,6 +2752,21 @@ def ess_pdf_s3_key_for_kind(
     return ess_pdf_s3_key(safe_name, user_id=user_id)
 
 
+def _content_disposition(file_name: str, *, disposition: str = "attachment") -> str:
+    """Build latin-1-safe Content-Disposition (RFC 5987 filename*)."""
+    raw = (file_name or "download").replace('"', "").replace("\r", "").replace("\n", "")
+    ascii_name = raw.encode("ascii", "ignore").decode("ascii").strip(" .") or "download"
+    ascii_name = re.sub(r"_+", "_", ascii_name).strip("._") or "download"
+    _, ext = os.path.splitext(raw)
+    if ext and not ascii_name.lower().endswith(ext.lower()):
+        base = ascii_name if ascii_name != "download" else "download"
+        ascii_name = f"{base}{ext}"
+    return (
+        f'{disposition}; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(raw)}"
+    )
+
+
 def stream_ess_pdf_from_s3(
     file_name: str,
     user_id: str | None = None,
@@ -2779,7 +2796,7 @@ def stream_ess_pdf_from_s3(
             body.iter_chunks(chunk_size=1024 * 256),
             media_type=content_type,
             headers={
-                "Content-Disposition": f'inline; filename="{safe_name}"',
+                "Content-Disposition": _content_disposition(safe_name, disposition="inline"),
                 "Cache-Control": "private, max-age=3600",
             },
         )
