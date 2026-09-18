@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../api";
 import { formatBrandTitle } from "../formatBrandTitle";
 import { useTheme } from "../hooks/useTheme";
@@ -65,6 +65,9 @@ interface Props {
   knowledgeGraphEnabled?: boolean;
   onPatchKnowledgeGraphEnabled?: (enabled: boolean) => void | Promise<void>;
   onOpenDashboard?: () => void;
+  sidebarResizing?: boolean;
+  onSidebarResizeStart?: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onSidebarResizeReset?: () => void;
 }
 
 export function Sidebar({
@@ -85,6 +88,9 @@ export function Sidebar({
   knowledgeGraphEnabled = true,
   onPatchKnowledgeGraphEnabled,
   onOpenDashboard,
+  sidebarResizing = false,
+  onSidebarResizeStart,
+  onSidebarResizeReset,
 }: Props) {
   const skillBtnRef = useRef<HTMLButtonElement>(null);
   const mcpBtnRef = useRef<HTMLButtonElement>(null);
@@ -545,6 +551,18 @@ export function Sidebar({
             </div>
           )}
         </div>
+
+        {onSidebarResizeStart && (
+          <div
+            className={`sidebar-resizer${sidebarResizing ? " is-active" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize task panel"
+            title="Drag to resize · double-click to reset"
+            onPointerDown={onSidebarResizeStart}
+            onDoubleClick={onSidebarResizeReset}
+          />
+        )}
       </aside>
 
       {drawer === "skill" && config && activeTask && (
