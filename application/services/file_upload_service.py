@@ -57,6 +57,7 @@ LOAD_FILE_ALLOWED_EXTENSIONS = {
     ".yaml",
     ".xml",
     ".rst",
+    ".dxf",
     ".png",
     ".jpg",
     ".jpeg",
