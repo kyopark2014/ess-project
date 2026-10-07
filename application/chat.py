@@ -1351,16 +1351,28 @@ def summarize_image(image_content: bytes, prompt: str) -> str:
     return summary
 
 
-def _is_local_file_ref(file_ref: str) -> bool:
-    """True when file_ref points at a readable local path (Load files)."""
+def _existing_local_path(file_ref: str) -> str | None:
+    """Return the NFC or NFD spelling that exists on disk."""
     path = (file_ref or "").strip()
     if not path or "://" in path:
-        return False
-    return os.path.isfile(path)
+        return None
+    unicode_paths = utils._load_unicode_paths()
+    resolved = unicode_paths.resolve_existing_path(path)
+    if resolved and os.path.isfile(resolved):
+        return resolved
+    for cand in unicode_paths.path_spellings(path):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _is_local_file_ref(file_ref: str) -> bool:
+    """True when file_ref points at a readable local path (Load files)."""
+    return _existing_local_path(file_ref) is not None
 
 
 def _load_local_file_bytes(file_ref: str) -> bytes:
-    path = (file_ref or "").strip()
+    path = _existing_local_path(file_ref) or (file_ref or "").strip()
     with open(path, "rb") as f:
         return f.read()
 
@@ -1373,10 +1385,18 @@ def _is_http_file_ref(file_ref: str) -> bool:
 def _load_bytes_from_s3_key(s3_key: str) -> bytes:
     if not s3_bucket:
         raise ValueError("s3_bucket is not configured")
+    unicode_paths = utils._load_unicode_paths()
+    keys = unicode_paths.path_spellings(s3_key)
     s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
-    logger.info("loading file from s3://%s/%s", s3_bucket, s3_key)
-    obj = s3_client.get_object(Bucket=s3_bucket, Key=s3_key)
-    return obj["Body"].read()
+    last_error: Exception | None = None
+    for key in keys:
+        try:
+            logger.info("loading file from s3://%s/%s", s3_bucket, key)
+            obj = s3_client.get_object(Bucket=s3_bucket, Key=key)
+            return obj["Body"].read()
+        except Exception as exc:
+            last_error = exc
+    raise last_error or FileNotFoundError(s3_key)
 
 
 def _load_bytes_from_http_url(url: str) -> bytes:

@@ -94,8 +94,12 @@ def sanitize_image_filename(filename: str) -> str:
 
 
 def sanitize_load_filename(filename: str) -> str:
-    """Validate Load-files extension and return a safe basename (overwrite-safe)."""
-    name = os.path.basename(filename or "").strip() or "upload.bin"
+    """Validate Load-files extension and return a safe basename (overwrite-safe).
+
+    macOS gives decomposed Hangul (NFD). Store and address the file as NFC so
+    Linux and the agent look up the same path.
+    """
+    name = utils.nfc_filename(filename, default="upload.bin")
     if name in {".", ".."} or "/" in name or "\\" in name:
         name = "upload.bin"
     ext = os.path.splitext(name)[1].lower()
@@ -110,7 +114,7 @@ def sanitize_load_filename(filename: str) -> str:
 def workspace_upload_path(user_id: str | None, file_name: str) -> str:
     """Absolute path: {SESSION_STORAGE_DIR}/{user}/upload/{file}."""
     segment = utils.sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name)
+    safe_name = utils.nfc_filename(file_name, default="upload.bin")
     return os.path.join(utils.SESSION_STORAGE_DIR, segment, UPLOAD_SUBDIR, safe_name)
 
 
@@ -232,7 +236,7 @@ def complete_load_file_upload(
 
     expected_key = _expected_session_upload_key(user_id, safe_name)
     key = (s3_key or "").strip()
-    if key != expected_key:
+    if utils.nfc_text(key) != utils.nfc_text(expected_key):
         raise FileUploadServiceError(400, "Invalid upload target")
 
     head = utils.head_session_upload_object(key)

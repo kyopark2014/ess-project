@@ -6,6 +6,7 @@ import json
 import traceback
 import boto3
 import os
+import unicodedata
 from urllib import parse
 from botocore.exceptions import ClientError
 
@@ -17,6 +18,35 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("utils")
+
+def _load_unicode_paths():
+    """Import the app-local Hangul path helper in either layout."""
+    try:
+        from application import unicode_paths
+    except ImportError:
+        import unicode_paths
+    return unicode_paths
+
+
+
+def nfc_text(value: str | None) -> str:
+    """Compose Hangul so an NFD upload and an NFC lookup share one spelling."""
+    return unicodedata.normalize("NFC", value or "")
+
+
+def nfc_filename(filename: str | None, *, default: str = "") -> str:
+    """Return a basename in NFC.
+
+    macOS file pickers send decomposed Hangul (NFD). Linux paths and the
+    agent look up composed Hangul (NFC), so store and address one spelling.
+    """
+    name = nfc_text(os.path.basename(filename or "").strip())
+    name = name.replace("\x00", "")
+    if name in {".", ".."}:
+        return default
+    return name or default
+
+
 
 aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
 aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
@@ -1829,7 +1859,7 @@ SESSION_UPLOAD_S3_PREFIX = "session-uploads"
 def session_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
     """Build ``session-uploads/{user}/upload/{file}`` object key."""
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     return f"{SESSION_UPLOAD_S3_PREFIX}/{segment}/upload/{safe_name}"
 
 
@@ -1844,7 +1874,7 @@ def _session_upload_content_type(file_name: str) -> str:
 def local_session_upload_path(file_name: str, user_id: str | None = None) -> str:
     """Absolute path: ``SESSION_STORAGE_DIR/{user}/upload/{file}``."""
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     return os.path.join(SESSION_STORAGE_DIR, segment, "upload", safe_name)
 
 
@@ -1941,19 +1971,28 @@ def generate_session_upload_presigned_put(
 
 
 def head_session_upload_object(s3_key: str) -> dict | None:
-    """HEAD an object; return ``{content_length, content_type}`` or None."""
+    """HEAD an object; return ``{content_length, content_type}`` or None.
+
+    Tries the NFC and NFD spellings so a Mac-placed object is found from an
+    NFC key.
+    """
     if not s3_bucket or not s3_key:
         return None
-    try:
-        s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
-        response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
-        return {
-            "content_length": int(response.get("ContentLength") or 0),
-            "content_type": response.get("ContentType"),
-        }
-    except Exception:
-        logger.error("Error head_object key=%s: %s", s3_key, traceback.format_exc())
-        return None
+    unicode_paths = _load_unicode_paths()
+    keys = unicode_paths.path_spellings(s3_key)
+    last_error = ""
+    for key in keys:
+        try:
+            s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
+            response = s3_client.head_object(Bucket=s3_bucket, Key=key)
+            return {
+                "content_length": int(response.get("ContentLength") or 0),
+                "content_type": response.get("ContentType"),
+            }
+        except Exception:
+            last_error = traceback.format_exc()
+    logger.error("Error head_object keys=%s: %s", keys, last_error)
+    return None
 
 
 def materialize_session_upload_from_s3(
@@ -1964,12 +2003,25 @@ def materialize_session_upload_from_s3(
     """Download a staged S3 Load-files object into SESSION_STORAGE_DIR."""
     if not s3_bucket or not s3_key:
         return None
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     dest_path = local_session_upload_path(safe_name, user_id=user_id)
+    unicode_paths = _load_unicode_paths()
+    keys = unicode_paths.path_spellings(s3_key)
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         s3_client = boto3.client(service_name="s3", region_name=bedrock_region)
-        s3_client.download_file(s3_bucket, s3_key, dest_path)
+        last_error = ""
+        downloaded = False
+        for key in keys:
+            try:
+                s3_client.download_file(s3_bucket, key, dest_path)
+                downloaded = True
+                break
+            except Exception:
+                last_error = traceback.format_exc()
+        if not downloaded:
+            logger.error("Error download session upload keys=%s: %s", keys, last_error)
+            return None
         size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
         content_type = _session_upload_content_type(safe_name)
         logger.info(

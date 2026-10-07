@@ -1,6 +1,17 @@
 import type { AppConfig, DashboardStats, Message, StreamEvent, Task, TaskRun } from "./types";
 import { uiError, uiLog } from "./debug";
 
+/** macOS file pickers yield NFD Hangul. Uploads store and address NFC. */
+function fileWithNfcName(file: File): File {
+  const name = file.name.normalize("NFC");
+  if (!name || name === file.name) return file;
+  return new File([file], name, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
+}
+
+
 export interface RagUploadResult {
   ok: boolean;
   file_name: string;
@@ -687,6 +698,7 @@ export const api = {
     return data;
   },
   loadFile: async (file: File): Promise<LoadFileResult> => {
+    file = fileWithNfcName(file);
     // Presigned PUT: browser → S3 directly (avoids ECS/ALB ~80MB body limits).
     uiLog("file:load start", { name: file.name, size: file.size, type: file.type });
 
