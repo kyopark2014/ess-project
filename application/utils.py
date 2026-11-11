@@ -890,6 +890,16 @@ def load_user_settings(user_id: str | None) -> dict[str, object]:
                 settings["skills"] = _normalize_string_list(raw.get("skills"))
             if "mcp_servers" in raw:
                 settings["mcp_servers"] = _normalize_string_list(raw.get("mcp_servers"))
+            for flag in (
+                "guardrail_enabled",
+                "memory_enabled",
+            ):
+                if flag in raw:
+                    settings[flag] = bool(raw[flag])
+            if "model_name" in raw and isinstance(raw.get("model_name"), str):
+                name = raw["model_name"].strip()
+                if name:
+                    settings["model_name"] = name
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Failed to load user settings %s: %s", path, e)
     return settings
@@ -915,6 +925,15 @@ def save_user_settings(user_id: str | None, **updates: object) -> dict[str, obje
             settings[key] = bool(value)
         elif key == "ess_parallel_processing_enabled":
             settings[key] = bool(value)
+        elif key in (
+            "guardrail_enabled",
+            "memory_enabled",
+        ):
+            settings[key] = bool(value)
+        elif key == "model_name":
+            name = str(value or "").strip()
+            if name:
+                settings[key] = name
         elif key == "skills":
             settings[key] = _normalize_string_list(value)
         elif key == "mcp_servers":
@@ -1163,6 +1182,44 @@ def save_user_tool_defaults(
         updates["skills"] = skills
     if mcp_servers is not None:
         updates["mcp_servers"] = mcp_servers
+    if not updates:
+        return load_user_settings(user_id)
+    return save_user_settings(user_id, **updates)
+
+
+def get_user_task_feature_flags(user_id: str | None) -> dict[str, bool]:
+    """Per-user Guardrail / Memory defaults (all-tasks scope)."""
+    settings = load_user_settings(user_id)
+    return {
+        "guardrail_enabled": bool(settings.get("guardrail_enabled", False)),
+        "memory_enabled": bool(settings.get("memory_enabled", True)),
+    }
+
+
+def get_user_preferred_model(user_id: str | None) -> str | None:
+    """Per-user model preference shared across all tasks, if saved."""
+    settings = load_user_settings(user_id)
+    raw = settings.get("model_name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def save_user_task_feature_flags(
+    user_id: str | None,
+    *,
+    guardrail_enabled: bool | None = None,
+    memory_enabled: bool | None = None,
+    model_name: str | None = None,
+) -> dict[str, object]:
+    """Persist shared task settings so new tasks inherit them."""
+    updates: dict[str, object] = {}
+    if guardrail_enabled is not None:
+        updates["guardrail_enabled"] = guardrail_enabled
+    if memory_enabled is not None:
+        updates["memory_enabled"] = memory_enabled
+    if model_name is not None and str(model_name).strip():
+        updates["model_name"] = str(model_name).strip()
     if not updates:
         return load_user_settings(user_id)
     return save_user_settings(user_id, **updates)

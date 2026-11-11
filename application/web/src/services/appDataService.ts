@@ -9,6 +9,15 @@ export type CreateTaskDefaults = {
   memory_enabled?: boolean;
 };
 
+function resolveInitialModel(config: AppConfig): string {
+  const gatewayModels = config.gateway_models ?? [];
+  if (gatewayModels.length > 0) {
+    const candidate = config.default_gateway_model ?? config.default_model;
+    return gatewayModels.includes(candidate) ? candidate : gatewayModels[0];
+  }
+  return config.default_model;
+}
+
 function sanitizeError(error: unknown, fallback: string): Error {
   if (error instanceof Error) {
     console.error(fallback, error);
@@ -138,19 +147,11 @@ export const appDataService = {
     try {
       const latest = sort((await api.listTasks()).tasks);
       if (latest.length > 0) return latest[0];
-      const gatewayModels = config.gateway_models ?? [];
-      const defaultModel =
-        gatewayModels.length > 0
-          ? (config.default_gateway_model &&
-            gatewayModels.includes(config.default_gateway_model)
-              ? config.default_gateway_model
-              : gatewayModels[0])
-          : config.default_model;
+      // Leave guardrail / memory unset so create_task reads settings.json.
       return await api.createTask({
-        model_name: defaultModel,
-        skills: config.default_skills,
-        mcp_servers: config.default_mcp_servers,
-        memory_enabled: true,
+        model_name: resolveInitialModel(config),
+        skills: config.default_skills ?? [],
+        mcp_servers: config.default_mcp_servers ?? [],
       });
     } catch (error) {
       throw sanitizeError(error, "Failed to initialize task.");

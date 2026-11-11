@@ -168,6 +168,17 @@ def get_config(request: Request):
         if DEFAULT_GATEWAY_MODEL in gateway_models
         else (gateway_models[0] if gateway_models else DEFAULT_MODEL)
     )
+    # Per-user Settings (model / Guardrail / Memory) shared by all tasks.
+    flags = utils.get_user_task_feature_flags(session_user)
+    preferred_model = utils.get_user_preferred_model(session_user)
+    default_model = DEFAULT_MODEL
+    if preferred_model:
+        if gateway_models:
+            if preferred_model in gateway_models:
+                default_model = preferred_model
+                default_gateway_model = preferred_model
+        elif preferred_model in MODELS:
+            default_model = preferred_model
     return {
         "projectName": config.get("projectName", "agent"),
         "google_client_id": (config.get("google_client_id") or "").strip(),
@@ -177,10 +188,12 @@ def get_config(request: Request):
         "mcp_servers": mcp_options,
         "models": MODELS,
         "gateway_models": gateway_models,
-        "default_model": DEFAULT_MODEL,
+        "default_model": default_model,
         "default_gateway_model": default_gateway_model,
         "default_skills": default_skills,
         "default_mcp_servers": default_mcp,
+        "default_guardrail_enabled": flags["guardrail_enabled"],
+        "default_memory_enabled": flags["memory_enabled"],
     }
 
 

@@ -473,6 +473,55 @@ def create_task(
     return get_task(task_id, user_id)  # type: ignore[return-value]
 
 
+def update_all_tasks(
+    user_id: str,
+    *,
+    model_name: str | None = None,
+    guardrail_enabled: bool | None = None,
+    memory_enabled: bool | None = None,
+) -> int:
+    """Apply shared settings to every task for ``user_id``. Returns rows updated."""
+    sets: list[str] = []
+    values: list[Any] = []
+    if model_name is not None:
+        sets.append("model_name = ?")
+        values.append(str(model_name).strip() or DEFAULT_MODEL)
+    if guardrail_enabled is not None:
+        sets.append("guardrail_enabled = ?")
+        values.append(1 if guardrail_enabled else 0)
+    if memory_enabled is not None:
+        sets.append("memory_enabled = ?")
+        values.append(1 if memory_enabled else 0)
+    if not sets:
+        return 0
+    sets.append("updated_at = ?")
+    values.append(_now_iso())
+    values.append(user_id)
+    with _connect_user(user_id) as conn:
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE user_id = ?",
+            values,
+        )
+        rowcount = cur.rowcount
+    # Flush immediately so new-task creates / other instances see Settings.
+    flush_persist(user_id)
+    return int(rowcount or 0)
+
+
+def update_all_task_flags(
+    user_id: str,
+    *,
+    guardrail_enabled: bool | None = None,
+    memory_enabled: bool | None = None,
+) -> int:
+    """Backward-compatible alias for flag-only updates."""
+    return update_all_tasks(
+        user_id,
+        guardrail_enabled=guardrail_enabled,
+        memory_enabled=memory_enabled,
+    )
+
+
 def update_task(task_id: str, user_id: str, **fields: Any) -> dict[str, Any] | None:
     allowed = {
         "title": "title",

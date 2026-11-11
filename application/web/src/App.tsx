@@ -407,7 +407,8 @@ export default function App() {
   async function handleNewTask() {
     if (!config) return;
     try {
-      const task = await appDataService.createTask(buildNewTaskDefaults(config, activeTask));
+      // Use per-user Settings defaults (shared across tasks), not activeTask.
+      const task = await appDataService.createTask(buildNewTaskDefaults(config));
       setTasks((prev) => [task, ...prev]);
       setActiveTaskId(task.id);
       setMessages([]);
@@ -415,8 +416,11 @@ export default function App() {
         prev
           ? {
               ...prev,
+              default_model: task.model_name,
               default_skills: task.skills,
               default_mcp_servers: task.mcp_servers,
+              default_guardrail_enabled: task.guardrail_enabled,
+              default_memory_enabled: task.memory_enabled,
             }
           : prev,
       );
@@ -439,17 +443,73 @@ export default function App() {
   }
 
   async function handlePatchTask(taskId: string, patch: Partial<Task>) {
+    // Model / Guardrail / Memory apply to every task for this user.
+    const globalFields: Partial<
+      Pick<Task, "model_name" | "guardrail_enabled" | "memory_enabled">
+    > = {};
+    if (patch.model_name !== undefined) {
+      globalFields.model_name = patch.model_name;
+    }
+    if (patch.guardrail_enabled !== undefined) {
+      globalFields.guardrail_enabled = patch.guardrail_enabled;
+    }
+    if (patch.memory_enabled !== undefined) {
+      globalFields.memory_enabled = patch.memory_enabled;
+    }
+    const applyGlobal = Object.keys(globalFields).length > 0;
+
+    // Optimistic update: checkbox is controlled by task state, so without this
+    // the UI snaps back to the old value until the PATCH round-trip finishes.
+    setTasks((prev) =>
+      sortTasks(
+        prev.map((t) => {
+          if (t.id === taskId) {
+            return { ...t, ...patch, ...(applyGlobal ? globalFields : {}) };
+          }
+          return applyGlobal ? { ...t, ...globalFields } : t;
+        }),
+      ),
+    );
+
     try {
       const updated = await appDataService.patchTask(taskId, patch);
       setTasks((prev) =>
-        sortTasks(prev.map((t) => (t.id === updated.id ? updated : t))),
+        sortTasks(
+          prev.map((t) => {
+            if (t.id === updated.id) {
+              return applyGlobal ? { ...updated, ...globalFields } : updated;
+            }
+            return applyGlobal ? { ...t, ...globalFields } : t;
+          }),
+        ),
       );
       // Keep config defaults in sync with settings.json (server persists on patch).
-      if (patch.skills !== undefined || patch.mcp_servers !== undefined) {
+      if (
+        applyGlobal ||
+        patch.skills !== undefined ||
+        patch.mcp_servers !== undefined
+      ) {
         setConfig((prev) =>
           prev
             ? {
                 ...prev,
+                ...(globalFields.model_name !== undefined
+                  ? {
+                      default_model: globalFields.model_name,
+                      ...(prev.gateway_models?.includes(globalFields.model_name)
+                        ? { default_gateway_model: globalFields.model_name }
+                        : {}),
+                    }
+                  : {}),
+                ...(globalFields.guardrail_enabled !== undefined
+                  ? {
+                      default_guardrail_enabled:
+                        globalFields.guardrail_enabled,
+                    }
+                  : {}),
+                ...(globalFields.memory_enabled !== undefined
+                  ? { default_memory_enabled: globalFields.memory_enabled }
+                  : {}),
                 ...(patch.skills !== undefined
                   ? { default_skills: updated.skills }
                   : {}),
@@ -462,6 +522,11 @@ export default function App() {
       }
     } catch (err) {
       uiError("task:patch failed", err);
+      try {
+        await refreshTasks();
+      } catch (refreshErr) {
+        uiError("task:refresh after patch failed", refreshErr);
+      }
       const message =
         err instanceof Error && err.message
           ? err.message
@@ -566,8 +631,11 @@ export default function App() {
         prev
           ? {
               ...prev,
+              default_model: task.model_name,
               default_skills: task.skills,
               default_mcp_servers: task.mcp_servers,
+              default_guardrail_enabled: task.guardrail_enabled,
+              default_memory_enabled: task.memory_enabled,
             }
           : prev,
       );

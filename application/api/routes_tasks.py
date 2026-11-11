@@ -18,8 +18,9 @@ class TaskCreate(BaseModel):
     model_name: str | None = None
     skills: list[str] | None = None
     mcp_servers: list[str] | None = None
-    guardrail_enabled: bool = False
-    memory_enabled: bool = True
+    # None → per-user settings (applies to all tasks when toggled in UI).
+    guardrail_enabled: bool | None = None
+    memory_enabled: bool | None = None
     title: str = "New task"
 
 
@@ -50,20 +51,33 @@ def list_tasks(request: Request, limit: int = 100):
 @router.post("")
 def create_task(body: TaskCreate, request: Request):
     user_id = require_user_id(request)
+    flags = utils.get_user_task_feature_flags(user_id)
+    guardrail_enabled = (
+        flags["guardrail_enabled"]
+        if body.guardrail_enabled is None
+        else body.guardrail_enabled
+    )
+    memory_enabled = (
+        flags["memory_enabled"]
+        if body.memory_enabled is None
+        else body.memory_enabled
+    )
     skills, mcp_servers = _resolve_tool_defaults(
         user_id, body.skills, body.mcp_servers
     )
+    preferred_model = utils.get_user_preferred_model(user_id)
+    model_name = body.model_name or preferred_model
     # Remember the user's last selection for subsequent new tasks.
     utils.save_user_tool_defaults(
         user_id, skills=skills, mcp_servers=mcp_servers
     )
     task = task_store.create_task(
         user_id,
-        model_name=body.model_name,
+        model_name=model_name,
         skills=skills,
         mcp_servers=mcp_servers,
-        guardrail_enabled=body.guardrail_enabled,
-        memory_enabled=body.memory_enabled,
+        guardrail_enabled=guardrail_enabled,
+        memory_enabled=memory_enabled,
         title=body.title,
     )
     return task
@@ -85,10 +99,25 @@ def patch_task(task_id: str, body: TaskPatch, request: Request):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     patch = body.model_dump(exclude_unset=True)
-    updated = task_store.update_task(
-        task_id,
-        user_id,
-        **patch,
+
+    # Model / Guardrail / Memory apply to every task for this user.
+    global_fields = {
+        key: patch.pop(key)
+        for key in (
+            "model_name",
+            "guardrail_enabled",
+            "memory_enabled",
+        )
+        if key in patch
+    }
+    if global_fields:
+        task_store.update_all_tasks(user_id, **global_fields)
+        utils.save_user_task_feature_flags(user_id, **global_fields)
+
+    updated = (
+        task_store.update_task(task_id, user_id, **patch)
+        if patch
+        else task_store.get_task(task_id, user_id)
     )
     if updated and ("skills" in patch or "mcp_servers" in patch):
         utils.save_user_tool_defaults(
