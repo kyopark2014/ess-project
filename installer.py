@@ -17,7 +17,7 @@ from bedrock_agentcore.memory import MemoryClient
 # Configuration
 project_name = "ess-project"  # at least 3 characters
 region = "us-west-2"
-AGENTCORE_GATEWAY_REGION = "us-east-1"
+AGENTCORE_GATEWAY_REGION = "us-west-2"
 AGENTCORE_WEBSEARCH_GATEWAY_NAME = "gateway-websearch"
 AGENTCORE_WEBSEARCH_TARGET_NAME = "websearch"
 vector_index_name = project_name
@@ -1640,7 +1640,7 @@ def _ensure_websearch_gateway_target(gateway_id: str) -> str:
 
 
 def get_or_create_agentcore_websearch_gateway(gateway_service_role_arn: str) -> Dict[str, str]:
-    """Create gateway-websearch with the managed web-search connector in us-east-1."""
+    """Create gateway-websearch with the managed web-search connector in us-west-2."""
     logger.info("[3/6] Creating AgentCore Web Search gateway")
 
     gateway_id = None

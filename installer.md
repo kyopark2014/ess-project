@@ -89,7 +89,7 @@ vector_index_name = project_name
 - **sharing_url**: `https://{cloudfront_domain}` → `application/config.json`에 저장
 
 ### 7. AgentCore Web Search Gateway
-- **Gateway**: `gateway-websearch` (`us-east-1`)
+- **Gateway**: `gateway-websearch` (`us-west-2`)
 - **Target**: 관리형 `web-search` 커넥터
 
 ---
